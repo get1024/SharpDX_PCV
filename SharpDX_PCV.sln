@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36221.1 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpDX_PCV", "SharpDX_PCV\SharpDX_PCV.csproj", "{EBAE17DB-50F3-4ED6-A96A-7EEFF5C93492}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{EBAE17DB-50F3-4ED6-A96A-7EEFF5C93492}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EBAE17DB-50F3-4ED6-A96A-7EEFF5C93492}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EBAE17DB-50F3-4ED6-A96A-7EEFF5C93492}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EBAE17DB-50F3-4ED6-A96A-7EEFF5C93492}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {371B7284-9C90-47FD-A87F-D59E8956676B}
+	EndGlobalSection
+EndGlobal

@@ -1,0 +1,95 @@
+﻿<Window x:Class="SharpDX_PCV.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:SharpDX_PCV"
+        xmlns:hx="http://helix-toolkit.org/wpf/SharpDX"
+        mc:Ignorable="d"
+        Title="Point Cloud Viewer" Height="600" Width="1000">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Top Control Panel -->
+        <Border Grid.Row="0" Background="#F0F0F0" Padding="10" BorderBrush="#CCCCCC" BorderThickness="0,0,0,1">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <Button x:Name="btnOpenFile"
+                        Content="选择文件"
+                        Padding="10,5" Margin="0,0,10,0" Click="BtnOpenFile_Click"/>
+
+                <!-- 降采样控制 -->
+                <TextBlock Text="降采样级别:" VerticalAlignment="Center" Margin="20,0,5,0"/>
+                <Slider x:Name="DownsampleSlider"
+                        Minimum="1" Maximum="10" Value="1"
+                        Width="100" VerticalAlignment="Center"
+                        TickFrequency="1" TickPlacement="BottomRight"
+                        IsSnapToTickEnabled="True"
+                        ValueChanged="DownsampleSlider_ValueChanged"/>
+                <TextBlock x:Name="DownsampleValueText" Text="1"
+                           VerticalAlignment="Center" Margin="5,0,0,0" MinWidth="15"/>
+
+                <!-- 颜色模式选择 -->
+                <TextBlock Text="颜色模式:" VerticalAlignment="Center" Margin="20,0,5,0"/>
+                <ComboBox x:Name="ColorModeComboBox"
+                          Width="120" VerticalAlignment="Center"
+                          SelectionChanged="ColorModeComboBox_SelectionChanged">
+                    <ComboBoxItem Content="彩虹色谱" Tag="Rainbow" IsSelected="True"/>
+                    <ComboBoxItem Content="高度映射" Tag="HeightBased"/>
+                    <ComboBoxItem Content="深度映射" Tag="DepthBased"/>
+                    <ComboBoxItem Content="热力图" Tag="Thermal"/>
+                    <ComboBoxItem Content="密度映射" Tag="DensityBased"/>
+                </ComboBox>
+
+                <!-- 状态显示 -->
+                <TextBlock x:Name="txtStatus" Text="就绪"
+                           VerticalAlignment="Center" Margin="20,0,0,0"
+                           Foreground="DarkBlue"/>
+            </StackPanel>
+        </Border>
+
+        <!-- 3D Viewport -->
+        <hx:Viewport3DX x:Name="helixViewport"
+                        Grid.Row="1"
+                Background="WhiteSmoke"
+                CameraMode="Inspect"
+                ZoomExtentsWhenLoaded="True"
+                ShowViewCube="True"
+                CameraRotationMode="Trackball"
+                ZoomRectangleCursor="ScrollSE"
+                ZoomCursor="SizeNS"
+                RotateCursor="SizeAll"
+                PanCursor="Hand"
+                ChangeFieldOfViewCursor="ScrollNS"
+                ShowCoordinateSystem="True"
+                BorderThickness="1"
+                BorderBrush="Gray"
+                Margin="5"
+                EnableSwapChainRendering="True"
+                EnableSSAO="False"
+                MSAA="Two">
+
+            <!-- Effects Manager -->
+            <hx:Viewport3DX.EffectsManager>
+                <hx:DefaultEffectsManager />
+            </hx:Viewport3DX.EffectsManager>
+
+            <!-- Camera Configuration -->
+            <hx:Viewport3DX.Camera>
+                <hx:OrthographicCamera x:Name="MainCamera"
+                    UpDirection="0 0 1"
+                    NearPlaneDistance="0.1"
+                    FarPlaneDistance="100000"/>
+            </hx:Viewport3DX.Camera>
+
+            <!-- Lighting Setup -->
+            <hx:AmbientLight3D Color="#444444" />
+            <hx:DirectionalLight3D Direction="-1,-1,-1" Color="White" />
+            <hx:DirectionalLight3D Direction="1,1,1" Color="#CCCCCC" />
+
+        </hx:Viewport3DX>
+
+    </Grid>
+</Window>
