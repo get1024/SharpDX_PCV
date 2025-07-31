@@ -1259,11 +1259,13 @@ namespace SharpDX_PCV
             // 调试：验证颜色数据
             DebugColorMapping(colors, points.Count);
 
-            // 创建点云模型
+            // 创建点云模型 - 基于WPF_PCV的工作实现
             currentPointCloud = new PointGeometryModel3D
             {
                 Geometry = pointGeometry,
-                // 不设置Color属性，让HelixToolkit使用Colors集合
+                // 根据WPF_PCV的实现，需要设置Color属性作为基础色
+                // Colors集合会在此基础上进行调制
+                Color = System.Windows.Media.Colors.White,
                 Size = new Size(CalculatePointSize(points.Count), CalculatePointSize(points.Count))
             };
 
@@ -1303,8 +1305,14 @@ namespace SharpDX_PCV
             var colors = new Color4Collection();
             if (points.Count == 0) return colors;
 
-            // 临时测试：使用固定的鲜艳颜色来验证颜色系统
             System.Diagnostics.Debug.WriteLine($"[颜色映射] 开始创建颜色映射，模式: {CurrentColorMode}, 点数: {points.Count}");
+
+            // 临时测试：强制使用测试颜色来验证系统
+            if (CurrentColorMode == ColorMappingMode.Rainbow)
+            {
+                System.Diagnostics.Debug.WriteLine("[颜色映射] 使用测试颜色进行调试");
+                return CreateTestColors(points);
+            }
 
             switch (CurrentColorMode)
             {
@@ -1319,7 +1327,7 @@ namespace SharpDX_PCV
                 case ColorMappingMode.Thermal:
                     return CreateThermalColors(points);
                 default:
-                    return CreateRainbowColors(points);
+                    return CreateTestColors(points); // 默认使用测试颜色
             }
         }
 
