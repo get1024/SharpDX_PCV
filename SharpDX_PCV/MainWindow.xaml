@@ -80,8 +80,8 @@
             <hx:Viewport3DX.Camera>
                 <hx:OrthographicCamera x:Name="MainCamera"
                     UpDirection="0 0 1"
-                    NearPlaneDistance="0.1"
-                    FarPlaneDistance="100000"/>
+                    NearPlaneDistance="0.00001"
+                    FarPlaneDistance="1000000000"/>
             </hx:Viewport3DX.Camera>
 
             <!-- Lighting Setup -->

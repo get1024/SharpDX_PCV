@@ -2,13 +2,17 @@
 
 ## 项目概述
 
-SharpDX_PCV 是一个基于 WPF 和 SharpDX 技术的高性能 3D 点云可视化应用程序。该项目专为处理大规模点云数据而设计，提供了直观的 3D 可视化界面、智能数据处理算法和优化的渲染性能。
+`SharpDX_PCV` 是一个基于 `WPF` 和 `SharpDX` 技术的高性能 3D 点云可视化应用程序。该项目专为处理大规模点云数据而设计，提供了直观的 3D 可视化界面、智能数据处理算法和优化的渲染性能。
 
 主要应用场景包括：
 - 激光扫描数据可视化
 - 工业测量数据分析
 - 3D 建模和重建
 - 科研数据可视化
+
+## 项目展示
+
+![](./Assets/display.gif)
 
 ## 技术栈
 
@@ -111,8 +115,7 @@ dotnet run --project SharpDX_PCV
 #### 2. 调整显示效果
 - 使用 **降采样滑块** 调整点云密度（1-10级）
 - 鼠标操作：
-  - **左键拖拽**: 旋转视角
-  - **右键拖拽**: 平移视图
+  - **右键拖拽**: 旋转视角
   - **滚轮**: 缩放视图
 
 #### 3. 查看统计信息
@@ -139,12 +142,8 @@ dotnet run --project SharpDX_PCV
 ## 支持的文件格式
 
 当前支持的点云文件格式：
-- **PLY** (Polygon File Format)
-- **PCD** (Point Cloud Data)
-- **XYZ** (ASCII Point Cloud)
+- **CSV** (Comma-separated values)
 - **TXT** (文本格式点云)
-
-> 注意：具体支持的格式取决于 `PointCloudFileLoader` 组件的实现
 
 ## 性能优化特性
 
@@ -166,7 +165,7 @@ dotnet run --project SharpDX_PCV
 
 ## 项目结构
 
-```
+```txt
 SharpDX_PCV/
 ├── SharpDX_PCV/
 │   ├── MainWindow.xaml          # 主窗口UI定义
