@@ -2,3 +2,7 @@
 bin/
 obj/
 Properties/
+
+SharpDX_PCV/pyFunc/__pycache__/
+SharpDX_PCV/pyFunc/.venv/
+uv.lock

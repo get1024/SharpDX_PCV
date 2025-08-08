@@ -1,0 +1,12 @@
+[project]
+name = "pyfunc"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.3.2",
+    "open3d>=0.19.0",
+    "scikit-learn>=1.7.1",
+    "scipy>=1.16.1",
+]

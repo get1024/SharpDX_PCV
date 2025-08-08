@@ -1,7 +1,7 @@
 ﻿using HelixToolkit.Wpf.SharpDX;
 using System.Windows;
-using System.Windows.Media.Media3D;
 using System.Windows.Controls;
+using System.Windows.Media.Media3D;
 using SharpDX;
 using Microsoft.Win32;
 using System.IO;
@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Threading;
+using System.Text.Json;
 
 namespace SharpDX_PCV
 {
@@ -20,19 +21,24 @@ namespace SharpDX_PCV
     public partial class MainWindow : Window
     {
         #region 私有字段
-        private readonly List<Vector3> pointCloudData = new List<Vector3>();
         private readonly List<Vector3> fullPointCloudData = new List<Vector3>(); // 完整数据
         private readonly List<Vector3> renderPointCloudData = new List<Vector3>(); // 渲染数据
+        private readonly List<int> renderPointFileIndices = new List<int>(); // 渲染数据对应的文件索引
         private readonly List<string> loadedFilePaths = new List<string>(); // 已加载文件路径
+        private readonly List<PointCloudFileInfo> fileInfoList = new List<PointCloudFileInfo>(); // 文件信息列表
         private PointGeometryModel3D? currentPointCloud;
+        private MeshGeometryModel3D? currentSTLMesh;
         private readonly PointCloudFileLoader fileLoader;
         private readonly PointCloudVisualizer visualizer;
+        private readonly STLConverter stlConverter;
 
         // 降采样控制
-        private int downsampleLevel = 1;
+        private int downsampleLevel = 3;
+
+        // 输出目录选择
+        private string? selectedOutputDir;
 
         // 流式渲染控制
-        private bool isStreamingMode = false;
         private CancellationTokenSource? streamingCancellation;
         private const int STREAMING_CHUNK_SIZE = 50000;
         private const int STREAMING_THRESHOLD = 100000;
@@ -52,6 +58,7 @@ namespace SharpDX_PCV
             // 初始化组件
             fileLoader = new PointCloudFileLoader();
             visualizer = new PointCloudVisualizer(helixViewport);
+            stlConverter = new STLConverter();
 
             // 确保所有UI控件都已加载后再初始化应用程序
             this.Loaded += MainWindow_Loaded;
@@ -82,12 +89,21 @@ namespace SharpDX_PCV
             DownsampleValueText.Text = downsampleLevel.ToString();
 
             // 设置默认颜色模式 - 先设置visualizer，再设置UI控件避免触发事件
-            visualizer.CurrentColorMode = PointCloudVisualizer.ColorMappingMode.Rainbow;
+            visualizer.CurrentColorMode = PointCloudVisualizer.ColorMappingMode.ByFile;
 
             // 临时移除事件处理器，设置选中项，然后重新添加
             ColorModeComboBox.SelectionChanged -= ColorModeComboBox_SelectionChanged;
-            ColorModeComboBox.SelectedIndex = 0; // 彩虹色谱
+            ColorModeComboBox.SelectedIndex = 0; // 按文件区分
             ColorModeComboBox.SelectionChanged += ColorModeComboBox_SelectionChanged;
+
+            // 设置默认输出目录
+            try
+            {
+                var docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                selectedOutputDir = docs;
+                if (txtOutputDir != null) txtOutputDir.Text = selectedOutputDir;
+            }
+            catch { /* 忽略初始化错误 */ }
         }
 
         /// <summary>
@@ -119,6 +135,44 @@ namespace SharpDX_PCV
         }
 
         /// <summary>
+        /// 输出目录浏览按钮点击事件
+        /// </summary>
+        private void BtnBrowseOutputDir_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var dlg = new Microsoft.Win32.OpenFileDialog
+                {
+                    Title = "选择STL输出目录",
+                    CheckFileExists = false,
+                    CheckPathExists = true,
+                    FileName = "选择文件夹",
+                    Filter = "文件夹|*.folder"
+                };
+
+                if (!string.IsNullOrWhiteSpace(selectedOutputDir) && Directory.Exists(selectedOutputDir))
+                {
+                    dlg.InitialDirectory = selectedOutputDir;
+                }
+
+                var result = dlg.ShowDialog();
+                if (result == true && !string.IsNullOrWhiteSpace(dlg.FileName))
+                {
+                    var selectedPath = Path.GetDirectoryName(dlg.FileName);
+                    if (!string.IsNullOrWhiteSpace(selectedPath))
+                    {
+                        selectedOutputDir = selectedPath;
+                        txtOutputDir.Text = selectedOutputDir;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"选择目录时发生错误:\n{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        /// <summary>
         /// 使用新颜色方案刷新可视化
         /// </summary>
         private async void RefreshVisualizationWithNewColors()
@@ -138,6 +192,9 @@ namespace SharpDX_PCV
                         // 重新创建可视化以应用新颜色
                         if (visualizer != null && renderPointCloudData != null)
                         {
+                            // 更新文件信息
+                            visualizer.SetFileInfoList(fileInfoList);
+                            visualizer.SetPointFileIndices(renderPointFileIndices);
                             visualizer.CreatePointCloudVisualization(renderPointCloudData);
 
                             var colorModeName = ColorModeComboBox?.SelectedItem is ComboBoxItem item ?
@@ -158,6 +215,78 @@ namespace SharpDX_PCV
                 }
             }
         }
+
+        /// <summary>
+        /// 点云转STL按钮点击事件
+        /// </summary>
+        private async void BtnConvertToSTL_Click(object sender, RoutedEventArgs e)
+        {
+            if (renderPointCloudData.Count == 0)
+            {
+                MessageBox.Show("没有可转换的点云数据。请先加载并渲染点云。", "转换错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            try
+            {
+                btnConvertToSTL.IsEnabled = false;
+                await ConvertRenderDataToSTLAsync();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"点云转STL时发生错误:\n{ex.Message}", "转换错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                btnConvertToSTL.IsEnabled = renderPointCloudData.Count > 0;
+            }
+        }
+
+        /// <summary>
+        /// STL导出按钮点击事件
+        /// </summary>
+        private async void BtnExportSTL_Click(object sender, RoutedEventArgs e)
+        {
+            if (currentSTLMesh == null)
+            {
+                MessageBox.Show("没有可导出的STL模型。请先加载点云文件。", "导出错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var saveFileDialog = new SaveFileDialog
+            {
+                Title = "保存STL文件",
+                Filter = "STL文件 (*.stl)|*.stl|所有文件 (*.*)|*.*",
+                DefaultExt = "stl",
+                InitialDirectory = Environment.CurrentDirectory
+            };
+
+            if (saveFileDialog.ShowDialog() == true)
+            {
+                try
+                {
+                    btnExportSTL.IsEnabled = false;
+                    txtStatus.Text = "正在导出STL文件...";
+
+                    await Task.Run(() =>
+                    {
+                        stlConverter.ExportSTL(currentSTLMesh, saveFileDialog.FileName);
+                    });
+
+                    txtStatus.Text = $"STL文件已成功导出: {Path.GetFileName(saveFileDialog.FileName)}";
+                    MessageBox.Show($"STL文件已成功保存到:\n{saveFileDialog.FileName}", "导出成功", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                catch (Exception ex)
+                {
+                    txtStatus.Text = "STL导出失败";
+                    MessageBox.Show($"导出STL文件时发生错误:\n{ex.Message}", "导出错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+                finally
+                {
+                    btnExportSTL.IsEnabled = true;
+                }
+            }
+        }
         #endregion
 
         #region 事件处理器
@@ -168,8 +297,8 @@ namespace SharpDX_PCV
         {
             var openFileDialog = new OpenFileDialog
             {
-                Title = "Select Point Cloud File(s)",
-                Filter = "Point Cloud files (*.txt;*.csv;*.dat)|*.txt;*.csv;*.dat|Text files (*.txt)|*.txt|CSV files (*.csv)|*.csv|All files (*.*)|*.*",
+                Title = "选择点云文件或STL文件",
+                Filter = "支持的文件 (*.txt;*.stl)|*.txt;*.stl|点云文件 (*.txt)|*.txt|STL文件 (*.stl)|*.stl|所有文件 (*.*)|*.*",
                 InitialDirectory = Environment.CurrentDirectory,
                 Multiselect = true // 启用多文件选择
             };
@@ -183,10 +312,40 @@ namespace SharpDX_PCV
         /// <summary>
         /// 处理多文件选择
         /// </summary>
-        private void HandleMultipleFileSelection(string[] selectedFiles)
+        private async void HandleMultipleFileSelection(string[] selectedFiles)
         {
             if (selectedFiles.Length == 0) return;
 
+            // 分类文件类型
+            var txtFiles = selectedFiles.Where(f => Path.GetExtension(f).ToLower() == ".txt").ToArray();
+            var stlFiles = selectedFiles.Where(f => Path.GetExtension(f).ToLower() == ".stl").ToArray();
+
+            // 检查文件类型组合
+            if (txtFiles.Length > 0 && stlFiles.Length > 0)
+            {
+                MessageBox.Show("不能同时选择TXT和STL文件。请分别选择一种类型的文件。", "文件类型错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            if (txtFiles.Length > 0)
+            {
+                await ProcessTxtFilesAsync(txtFiles);
+            }
+            else if (stlFiles.Length > 0)
+            {
+                await ProcessStlFilesAsync(stlFiles);
+            }
+            else
+            {
+                MessageBox.Show("请选择TXT或STL格式的文件。", "不支持的文件格式", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        /// <summary>
+        /// 处理TXT文件
+        /// </summary>
+        private async Task ProcessTxtFilesAsync(string[] txtFiles)
+        {
             // 如果已有数据，询问用户操作
             if (loadedFilePaths.Count > 0)
             {
@@ -210,8 +369,29 @@ namespace SharpDX_PCV
                 }
             }
 
-            // 加载选中的文件
-            LoadMultipleFilesAsync(selectedFiles);
+            // 加载TXT文件
+            await LoadMultipleFilesAsync(txtFiles);
+
+            // 只有在渲染数据就绪时才启用转换按钮
+            btnConvertToSTL.IsEnabled = renderPointCloudData.Count > 0;
+        }
+
+        /// <summary>
+        /// 处理STL文件
+        /// </summary>
+        private async Task ProcessStlFilesAsync(string[] stlFiles)
+        {
+            if (stlFiles.Length > 1)
+            {
+                MessageBox.Show("一次只能加载一个STL文件。", "文件数量限制", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            // 清空左侧点云显示
+            ClearPointCloudDisplay();
+
+            // 加载STL文件
+            await LoadStlFileAsync(stlFiles[0]);
         }
 
         /// <summary>
@@ -219,22 +399,102 @@ namespace SharpDX_PCV
         /// </summary>
         private void ClearAllData()
         {
-            pointCloudData.Clear();
             fullPointCloudData.Clear();
             renderPointCloudData.Clear();
+            renderPointFileIndices.Clear();
             loadedFilePaths.Clear();
+            fileInfoList.Clear();
 
             // 重置全局变换
             ResetGlobalTransform();
 
             // 清空3D视图
+            ClearPointCloudDisplay();
+            ClearSTLDisplay();
+
+            // 重置进度显示
+            ResetProgressDisplays();
+
+            txtStatus.Text = "已清空数据";
+        }
+
+        /// <summary>
+        /// 清空点云显示
+        /// </summary>
+        private void ClearPointCloudDisplay()
+        {
             if (currentPointCloud != null)
             {
                 helixViewport.Items.Remove(currentPointCloud);
                 currentPointCloud = null;
             }
+            btnConvertToSTL.IsEnabled = false;
+        }
 
-            txtStatus.Text = "已清空数据";
+        /// <summary>
+        /// 清空STL显示
+        /// </summary>
+        private void ClearSTLDisplay()
+        {
+            if (currentSTLMesh != null)
+            {
+                stlViewport.Items.Remove(currentSTLMesh);
+                currentSTLMesh = null;
+            }
+            btnExportSTL.IsEnabled = false;
+
+            // 重置右侧进度显示
+            UpdateRightProgress(0, "就绪");
+        }
+
+        /// <summary>
+        /// 重置进度显示
+        /// </summary>
+        private void ResetProgressDisplays()
+        {
+            rightProgressBar.Value = 0;
+            rightProgressText.Text = "就绪";
+        }
+
+        /// <summary>
+        /// 加载STL文件
+        /// </summary>
+        private async Task LoadStlFileAsync(string filePath)
+        {
+            try
+            {
+                UpdateRightProgress(10, "正在读取STL文件...");
+
+                var stlLoader = new STLLoader();
+                var mesh = await Task.Run(() => stlLoader.LoadSTL(filePath));
+
+                UpdateRightProgress(80, "正在显示STL模型...");
+
+                DisplaySTLMesh(mesh);
+                btnExportSTL.IsEnabled = true;
+
+                UpdateRightProgress(100, $"STL文件加载完成: {Path.GetFileName(filePath)}");
+                txtStatus.Text = $"STL文件已加载: {Path.GetFileName(filePath)}";
+            }
+            catch (Exception ex)
+            {
+                UpdateRightProgress(0, $"STL加载失败: {ex.Message}");
+                MessageBox.Show($"加载STL文件时发生错误:\n{ex.Message}", "加载错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+
+
+        /// <summary>
+        /// 更新右侧进度显示
+        /// </summary>
+        private void UpdateRightProgress(double value, string text)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                rightProgressBar.Value = value;
+                rightProgressText.Text = text;
+            });
         }
 
         /// <summary>
@@ -244,11 +504,7 @@ namespace SharpDX_PCV
         {
             Dispatcher.Invoke(() =>
             {
-                if (result.IsSuccess)
-                {
-                    HandleSuccessfulLoad(result);
-                }
-                else
+                if (!result.IsSuccess)
                 {
                     HandleLoadError(result.ErrorMessage);
                 }
@@ -262,7 +518,7 @@ namespace SharpDX_PCV
         /// <summary>
         /// 异步加载多个点云文件
         /// </summary>
-        private async void LoadMultipleFilesAsync(string[] filePaths)
+        private async Task LoadMultipleFilesAsync(string[] filePaths)
         {
             btnOpenFile.IsEnabled = false;
             txtStatus.Text = "加载中...";
@@ -277,7 +533,10 @@ namespace SharpDX_PCV
                 {
                     try
                     {
-                        txtStatus.Text = $"加载文件 {loadedFiles + 1}/{totalFiles}: {Path.GetFileName(filePath)}";
+                        var fileName = Path.GetFileName(filePath);
+                        var progressPercent = (double)loadedFiles / totalFiles * 100;
+
+                        txtStatus.Text = $"加载文件 {loadedFiles + 1}/{totalFiles}: {fileName}";
 
                         // 检查文件是否存在
                         if (!File.Exists(filePath))
@@ -303,8 +562,19 @@ namespace SharpDX_PCV
 
                         if (loadResult.IsSuccess)
                         {
+                            // 创建文件信息记录
+                            var pointCloudFileInfo = new PointCloudFileInfo
+                            {
+                                FilePath = filePath,
+                                FileName = Path.GetFileName(filePath),
+                                StartIndex = allNewPoints.Count,
+                                PointCount = loadResult.Points.Count,
+                                FileIndex = loadedFiles
+                            };
+
                             allNewPoints.AddRange(loadResult.Points);
                             loadedFilePaths.Add(filePath);
+                            fileInfoList.Add(pointCloudFileInfo);
                             loadedFiles++;
                         }
                         else
@@ -342,7 +612,6 @@ namespace SharpDX_PCV
 
                     // 添加到完整数据集
                     fullPointCloudData.AddRange(allNewPoints);
-                    pointCloudData.AddRange(allNewPoints);
 
                     // 决定渲染策略
                     if (fullPointCloudData.Count > STREAMING_THRESHOLD)
@@ -383,19 +652,7 @@ namespace SharpDX_PCV
             }
         }
 
-        /// <summary>
-        /// 处理成功加载的结果
-        /// </summary>
-        private void HandleSuccessfulLoad(PointCloudLoadResult result)
-        {
-            // 更新点云数据
-            pointCloudData.Clear();
-            pointCloudData.AddRange(result.Points);
 
-            // 创建可视化
-            visualizer.CreatePointCloudVisualization(result.Points);
-
-        }
 
         /// <summary>
         /// 处理加载错误 - 增强版
@@ -505,7 +762,6 @@ namespace SharpDX_PCV
         /// </summary>
         private async Task HandleStreamingRender()
         {
-            isStreamingMode = true;
             streamingCancellation = new CancellationTokenSource();
             var token = streamingCancellation.Token;
 
@@ -521,9 +777,15 @@ namespace SharpDX_PCV
                 ApplyGlobalTransform(transformedData);
 
                 // 3. 应用降采样到变换后的数据
-                var downsampledData = await Task.Run(() => VoxelGridDownsample(transformedData, downsampleLevel), token);
+                var (downsampledData, fileIndices) = await Task.Run(() => VoxelGridDownsampleWithFileInfo(transformedData, downsampleLevel), token);
                 renderPointCloudData.Clear();
                 renderPointCloudData.AddRange(downsampledData);
+                renderPointFileIndices.Clear();
+                renderPointFileIndices.AddRange(fileIndices);
+
+                // 3.5. 更新可视化器的文件信息
+                visualizer.SetFileInfoList(fileInfoList);
+                visualizer.SetPointFileIndices(renderPointFileIndices);
 
                 // 4. 首帧快速渲染
                 await RenderFirstChunk(renderPointCloudData, token);
@@ -598,6 +860,9 @@ namespace SharpDX_PCV
 
             var reductionRatio = fullPointCloudData.Count > 0 ? (double)renderPointCloudData.Count / fullPointCloudData.Count : 1.0;
             txtStatus.Text = $"流式渲染完成: {renderPointCloudData.Count:N0}/{fullPointCloudData.Count:N0} 点 ({reductionRatio:P1})";
+
+            // 渲染完成后启用转换按钮
+            btnConvertToSTL.IsEnabled = renderPointCloudData.Count > 0;
         }
 
         /// <summary>
@@ -617,9 +882,15 @@ namespace SharpDX_PCV
                 ApplyGlobalTransform(transformedData);
 
                 // 3. 应用降采样
-                var downsampledData = await Task.Run(() => VoxelGridDownsample(transformedData, downsampleLevel));
+                var (downsampledData, fileIndices) = await Task.Run(() => VoxelGridDownsampleWithFileInfo(transformedData, downsampleLevel));
                 renderPointCloudData.Clear();
                 renderPointCloudData.AddRange(downsampledData);
+                renderPointFileIndices.Clear();
+                renderPointFileIndices.AddRange(fileIndices);
+
+                // 3.5. 更新可视化器的文件信息
+                visualizer.SetFileInfoList(fileInfoList);
+                visualizer.SetPointFileIndices(renderPointFileIndices);
 
                 // 4. 直接渲染
                 visualizer.CreatePointCloudVisualization(renderPointCloudData);
@@ -627,14 +898,19 @@ namespace SharpDX_PCV
                 var reductionRatio = fullPointCloudData.Count > 0 ? (double)renderPointCloudData.Count / fullPointCloudData.Count : 1.0;
                 var transformInfo = globalTransformCalculated ? $" | 已应用坐标变换 (缩放: {globalScale:F3})" : "";
                 txtStatus.Text = $"渲染完成: {renderPointCloudData.Count:N0}/{fullPointCloudData.Count:N0} 点 ({reductionRatio:P1}){transformInfo}";
+
+                // 标准渲染完成后启用转换按钮
+                btnConvertToSTL.IsEnabled = renderPointCloudData.Count > 0;
             }
             catch (OutOfMemoryException ex)
             {
                 HandleLoadError("渲染时内存不足", ex);
+                btnConvertToSTL.IsEnabled = false; // 渲染失败时禁用转换按钮
             }
             catch (Exception ex)
             {
                 HandleLoadError("渲染发生错误", ex);
+                btnConvertToSTL.IsEnabled = false; // 渲染失败时禁用转换按钮
             }
         }
 
@@ -645,7 +921,6 @@ namespace SharpDX_PCV
         /// </summary>
         private void CleanupStreamingResources()
         {
-            isStreamingMode = false;
             streamingCancellation?.Dispose();
             streamingCancellation = null;
         }
@@ -698,12 +973,18 @@ namespace SharpDX_PCV
                     ApplyGlobalTransform(transformedData);
 
                     // 3. 应用降采样
-                    var downsampledData = VoxelGridDownsample(transformedData, downsampleLevel);
+                    var (downsampledData, fileIndices) = VoxelGridDownsampleWithFileInfo(transformedData, downsampleLevel);
 
                     Dispatcher.Invoke(() =>
                     {
                         renderPointCloudData.Clear();
                         renderPointCloudData.AddRange(downsampledData);
+                        renderPointFileIndices.Clear();
+                        renderPointFileIndices.AddRange(fileIndices);
+
+                        // 更新可视化器的文件信息
+                        visualizer.SetFileInfoList(fileInfoList);
+                        visualizer.SetPointFileIndices(renderPointFileIndices);
 
                         // 更新3D显示
                         visualizer.CreatePointCloudVisualization(renderPointCloudData);
@@ -830,7 +1111,47 @@ namespace SharpDX_PCV
         #region === 降采样算法 ===
 
         /// <summary>
-        /// 体素网格降采样算法
+        /// 体素网格降采样算法（带文件索引）
+        /// </summary>
+        public (List<Vector3> points, List<int> fileIndices) VoxelGridDownsampleWithFileInfo(List<Vector3> points, int downsampleLevel = 1)
+        {
+            if (points?.Count <= 2 || downsampleLevel < 1)
+            {
+                var fileIndices = CreateFileIndicesForPoints(points?.Count ?? 0);
+                return (points ?? new List<Vector3>(), fileIndices);
+            }
+
+            // 根据降采样级别计算目标点数和体素大小
+            int targetPoints = CalculateTargetPoints(points.Count, downsampleLevel);
+            if (points.Count <= targetPoints)
+            {
+                var fileIndices = CreateFileIndicesForPoints(points.Count);
+                return (new List<Vector3>(points), fileIndices);
+            }
+
+            var bounds = CalculateBounds(points);
+            double voxelSize = CalculateOptimalVoxelSize(bounds, targetPoints, downsampleLevel);
+            var voxelGrid = BuildVoxelGridWithFileInfo(points, bounds, voxelSize);
+            var (resultPoints, resultFileIndices) = ExtractRepresentativePointsWithFileInfo(voxelGrid);
+
+            // 在UI线程上更新调试信息
+            Dispatcher.Invoke(() =>
+            {
+                var reductionRatio = points.Count > 0 ? (double)resultPoints.Count / points.Count : 1.0;
+                var xRange = bounds.maxX - bounds.minX;
+                var yRange = bounds.maxY - bounds.minY;
+                var zRange = bounds.maxZ - bounds.minZ;
+
+                txtStatus.Text = $"降采样完成: {resultPoints.Count:N0}/{points.Count:N0} 点 ({reductionRatio:P1}) | " +
+                               $"级别: {downsampleLevel} | 体素大小: {voxelSize:F4} | " +
+                               $"点云范围: X={xRange:F2}, Y={yRange:F2}, Z={zRange:F2}";
+            });
+
+            return (resultPoints, resultFileIndices);
+        }
+
+        /// <summary>
+        /// 体素网格降采样算法（原有方法，保持兼容性）
         /// </summary>
         public List<Vector3> VoxelGridDownsample(List<Vector3> points, int downsampleLevel = 1)
         {
@@ -973,6 +1294,432 @@ namespace SharpDX_PCV
             return voxelGrid.Values.Select(voxel => voxel.First()).ToList();
         }
 
+        /// <summary>
+        /// 为点创建文件索引数组
+        /// </summary>
+        private List<int> CreateFileIndicesForPoints(int pointCount)
+        {
+            var fileIndices = new List<int>();
+            int currentIndex = 0;
+
+            for (int i = 0; i < pointCount; i++)
+            {
+                // 找到当前点属于哪个文件
+                int fileIndex = 0;
+                int accumulatedCount = 0;
+
+                for (int j = 0; j < fileInfoList.Count; j++)
+                {
+                    if (currentIndex >= accumulatedCount && currentIndex < accumulatedCount + fileInfoList[j].PointCount)
+                    {
+                        fileIndex = j;
+                        break;
+                    }
+                    accumulatedCount += fileInfoList[j].PointCount;
+                }
+
+                fileIndices.Add(fileIndex);
+                currentIndex++;
+            }
+
+            return fileIndices;
+        }
+
+        /// <summary>
+        /// 构建带文件信息的体素网格
+        /// </summary>
+        private Dictionary<(int, int, int), List<(Vector3 point, int fileIndex)>> BuildVoxelGridWithFileInfo(
+            List<Vector3> points,
+            (float minX, float maxX, float minY, float maxY, float minZ, float maxZ) bounds,
+            double voxelSize)
+        {
+            var voxelGrid = new Dictionary<(int, int, int), List<(Vector3, int)>>();
+
+            for (int i = 0; i < points.Count; i++)
+            {
+                var point = points[i];
+                var fileIndex = GetOriginalFileIndexForPoint(i);
+
+                var key = (
+                    (int)((point.X - bounds.minX) / voxelSize),
+                    (int)((point.Y - bounds.minY) / voxelSize),
+                    (int)((point.Z - bounds.minZ) / voxelSize)
+                );
+
+                if (!voxelGrid.ContainsKey(key))
+                    voxelGrid[key] = new List<(Vector3, int)>();
+
+                voxelGrid[key].Add((point, fileIndex));
+            }
+
+            return voxelGrid;
+        }
+
+        /// <summary>
+        /// 提取带文件信息的代表点
+        /// </summary>
+        private (List<Vector3> points, List<int> fileIndices) ExtractRepresentativePointsWithFileInfo(
+            Dictionary<(int, int, int), List<(Vector3 point, int fileIndex)>> voxelGrid)
+        {
+            var points = new List<Vector3>();
+            var fileIndices = new List<int>();
+
+            foreach (var voxel in voxelGrid.Values)
+            {
+                var representative = voxel.First();
+                points.Add(representative.point);
+                fileIndices.Add(representative.fileIndex);
+            }
+
+            return (points, fileIndices);
+        }
+
+        /// <summary>
+        /// 获取原始数据中点的文件索引
+        /// </summary>
+        private int GetOriginalFileIndexForPoint(int pointIndex)
+        {
+            if (fileInfoList.Count == 0) return 0;
+
+            int currentIndex = 0;
+            for (int i = 0; i < fileInfoList.Count; i++)
+            {
+                if (pointIndex >= currentIndex && pointIndex < currentIndex + fileInfoList[i].PointCount)
+                {
+                    return i;
+                }
+                currentIndex += fileInfoList[i].PointCount;
+            }
+
+            return fileInfoList.Count - 1;
+        }
+
+        #endregion
+
+        #region === STL转换功能 ===
+
+        /// <summary>
+        /// 异步将渲染数据转换为STL模型（使用Python）
+        /// </summary>
+        private async Task ConvertRenderDataToSTLAsync()
+        {
+            if (renderPointCloudData.Count == 0) return;
+
+            try
+            {
+                UpdateRightProgress(5, "准备Python转换环境...");
+
+                // 将当前渲染数据写入临时TXT文件（使用快照，避免并发修改）
+                var tempTxtPath = Path.Combine(Path.GetTempPath(), $"render_points_{Guid.NewGuid():N}.txt");
+                var pointsSnapshot = renderPointCloudData.ToArray();
+                using (var sw = new StreamWriter(tempTxtPath))
+                {
+                    foreach (var p in pointsSnapshot)
+                    {
+                        await sw.WriteLineAsync(string.Format(CultureInfo.InvariantCulture, "{0} {1} {2}", p.X, p.Y, p.Z));
+                    }
+                }
+
+                // 确定输出目录和文件名
+                var outputDir = string.IsNullOrWhiteSpace(selectedOutputDir)
+                    ? Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
+                    : selectedOutputDir;
+                var outputName = $"pointcloud_{DateTime.Now:yyyyMMdd_HHmmss}.stl";
+                var tempJsonPath = Path.Combine(Path.GetTempPath(), $"result_{Guid.NewGuid():N}.json");
+
+                // 调用Python转换脚本（输入使用预处理后的渲染点云文件）
+                var result = await RunPythonConversionAsync(new[] { tempTxtPath }, outputDir, tempJsonPath, outputName);
+
+                if (result.Success && !string.IsNullOrWhiteSpace(result.OutputPath))
+                {
+                    UpdateRightProgress(90, "加载转换后的STL模型...");
+
+                    // 加载生成的STL文件
+                    var stlLoader = new STLLoader();
+                    var mesh = await Task.Run(() => stlLoader.LoadSTL(result.OutputPath));
+
+                    UpdateRightProgress(95, "正在显示STL模型...");
+
+                    // 在UI线程中更新显示
+                    Dispatcher.Invoke(() =>
+                    {
+                        DisplaySTLMesh(mesh);
+                        btnExportSTL.IsEnabled = true;
+                        UpdateRightProgress(100, $"STL转换完成 | 输入点数: {result.OriginalPoints:N0} | 三角形数: {result.FinalTriangles:N0}");
+                        txtStatus.Text = $"STL转换完成 | 输入点数: {result.OriginalPoints:N0} | 三角形数: {result.FinalTriangles:N0}";
+                    });
+
+                    // 清理临时文件
+                    try
+                    {
+                        if (File.Exists(tempJsonPath)) File.Delete(tempJsonPath);
+                        if (File.Exists(tempTxtPath)) File.Delete(tempTxtPath);
+                    }
+                    catch { /* 忽略清理错误 */ }
+                }
+                else
+                {
+                    throw new Exception(result.ErrorMessage ?? "Python转换失败");
+                }
+            }
+            catch (Exception ex)
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    UpdateRightProgress(0, $"STL转换失败: {ex.Message}");
+                    txtStatus.Text = $"STL转换失败: {ex.Message}";
+                    btnExportSTL.IsEnabled = false;
+                });
+            }
+        }
+
+        /// <summary>
+        /// Python转换结果
+        /// </summary>
+        public class PythonConversionResult
+        {
+            public bool Success { get; set; }
+            public string? ErrorMessage { get; set; }
+            public string? OutputPath { get; set; }
+            public int OriginalPoints { get; set; }
+            public int FinalTriangles { get; set; }
+            public int FinalVertices { get; set; }
+        }
+
+        /// <summary>
+        /// 运行Python转换脚本
+        /// </summary>
+        private async Task<PythonConversionResult> RunPythonConversionAsync(string[] inputFiles, string outputDir, string jsonOutputPath, string? outputName = null)
+        {
+            try
+            {
+                // 获取Python脚本路径（支持开发环境与发布环境）
+                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                string exeDir = AppContext.BaseDirectory;
+
+                string[] candidateScriptPaths = new[]
+                {
+                    Path.Combine(baseDir, "pyFunc", "pointcloud_to_stl.py"),
+                    Path.Combine(exeDir, "pyFunc", "pointcloud_to_stl.py"),
+                    Path.Combine(Environment.CurrentDirectory, "pyFunc", "pointcloud_to_stl.py"),
+                    Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "pyFunc", "pointcloud_to_stl.py")
+                };
+
+                string? scriptPath = candidateScriptPaths.FirstOrDefault(File.Exists);
+                if (scriptPath == null)
+                {
+                    throw new FileNotFoundException("Python脚本不存在: " + string.Join(" | ", candidateScriptPaths));
+                }
+
+                string[] candidatePythonExePaths = new[]
+                {
+                    Path.Combine(baseDir, "pyFunc", ".venv", "Scripts", "python.exe"),
+                    Path.Combine(exeDir, "pyFunc", ".venv", "Scripts", "python.exe"),
+                    Path.Combine(Environment.CurrentDirectory, "pyFunc", ".venv", "Scripts", "python.exe")
+                };
+
+                string? pythonExePath = candidatePythonExePaths.FirstOrDefault(File.Exists);
+                if (pythonExePath == null)
+                {
+                    throw new FileNotFoundException("Python解释器不存在: " + string.Join(" | ", candidatePythonExePaths));
+                }
+
+                // 构建命令行参数
+                var args = new List<string>
+                {
+                    $"\"{scriptPath}\"",
+                    "--output-dir", $"\"{outputDir}\"",
+                    "--json-output", $"\"{jsonOutputPath}\""
+                };
+
+                if (!string.IsNullOrWhiteSpace(outputName))
+                {
+                    args.Add("--output-name");
+                    args.Add($"\"{outputName}\"");
+                }
+
+                // 添加输入文件
+                foreach (var file in inputFiles)
+                {
+                    args.Add($"\"{file}\"");
+                }
+
+                var argumentString = string.Join(" ", args);
+
+                UpdateRightProgress(10, "启动Python转换进程...");
+
+                // 创建进程
+                var processInfo = new ProcessStartInfo
+                {
+                    FileName = pythonExePath,
+                    Arguments = argumentString,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                    WorkingDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "pyFunc")
+                };
+
+                using (var process = new Process { StartInfo = processInfo })
+                {
+                    var outputBuilder = new System.Text.StringBuilder();
+                    var errorBuilder = new System.Text.StringBuilder();
+
+                    process.OutputDataReceived += (sender, e) =>
+                    {
+                        if (!string.IsNullOrEmpty(e.Data))
+                        {
+                            outputBuilder.AppendLine(e.Data);
+
+                            // 解析进度信息
+                            if (e.Data.Contains("[") && e.Data.Contains("%]"))
+                            {
+                                try
+                                {
+                                    var start = e.Data.IndexOf('[') + 1;
+                                    var end = e.Data.IndexOf('%');
+                                    if (start > 0 && end > start)
+                                    {
+                                        var progressStr = e.Data.Substring(start, end - start).Trim();
+                                        if (double.TryParse(progressStr, out double progress))
+                                        {
+                                            var message = e.Data.Substring(e.Data.IndexOf(']') + 1).Trim();
+                                            UpdateRightProgress(10 + progress * 0.75, message); // 10-85%的进度范围
+                                        }
+                                    }
+                                }
+                                catch { /* 忽略进度解析错误 */ }
+                            }
+                        }
+                    };
+
+                    process.ErrorDataReceived += (sender, e) =>
+                    {
+                        if (!string.IsNullOrEmpty(e.Data))
+                        {
+                            errorBuilder.AppendLine(e.Data);
+                        }
+                    };
+
+                    process.Start();
+                    process.BeginOutputReadLine();
+                    process.BeginErrorReadLine();
+
+                    await process.WaitForExitAsync();
+
+                    if (process.ExitCode == 0)
+                    {
+                        // 读取JSON结果
+                        if (File.Exists(jsonOutputPath))
+                        {
+                            var jsonContent = await File.ReadAllTextAsync(jsonOutputPath);
+                            using var jsonDoc = JsonDocument.Parse(jsonContent);
+                            var root = jsonDoc.RootElement;
+
+                            return new PythonConversionResult
+                            {
+                                Success = root.TryGetProperty("success", out var succEl) && succEl.ValueKind == JsonValueKind.True,
+                                OutputPath = root.TryGetProperty("output_path", out var outEl) && outEl.ValueKind == JsonValueKind.String ? outEl.GetString() : null,
+                                OriginalPoints = root.TryGetProperty("original_points", out var pEl) && pEl.TryGetInt32(out var pVal) ? pVal : 0,
+                                FinalTriangles = root.TryGetProperty("final_triangles", out var tEl) && tEl.TryGetInt32(out var tVal) ? tVal : 0,
+                                FinalVertices = root.TryGetProperty("final_vertices", out var vEl) && vEl.TryGetInt32(out var vVal) ? vVal : 0,
+                                ErrorMessage = root.TryGetProperty("error", out var eEl) && eEl.ValueKind == JsonValueKind.String ? eEl.GetString() : null
+                            };
+                        }
+                        else
+                        {
+                            // 如果没有JSON文件，构建预期的输出路径
+                            var expectedPath = outputName != null ? Path.Combine(outputDir, outputName) : null;
+                            return new PythonConversionResult
+                            {
+                                Success = true,
+                                OutputPath = expectedPath
+                            };
+                        }
+                    }
+                    else
+                    {
+                        var errorMessage = errorBuilder.ToString();
+                        if (string.IsNullOrEmpty(errorMessage))
+                        {
+                            errorMessage = outputBuilder.ToString();
+                        }
+
+                        return new PythonConversionResult
+                        {
+                            Success = false,
+                            ErrorMessage = $"Python进程退出码: {process.ExitCode}\n{errorMessage}"
+                        };
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                return new PythonConversionResult
+                {
+                    Success = false,
+                    ErrorMessage = ex.Message
+                };
+            }
+        }
+
+        /// <summary>
+        /// 在STL视口中显示网格模型
+        /// </summary>
+        private void DisplaySTLMesh(HelixToolkit.Wpf.SharpDX.MeshGeometry3D mesh)
+        {
+            // 移除现有的STL模型
+            if (currentSTLMesh != null)
+            {
+                stlViewport.Items.Remove(currentSTLMesh);
+            }
+
+            // 创建新的STL模型
+            currentSTLMesh = new MeshGeometryModel3D
+            {
+                Geometry = mesh,
+                Material = new PhongMaterial
+                {
+                    DiffuseColor = new SharpDX.Color4(0.7f, 0.7f, 0.9f, 1.0f), // 浅蓝色
+                    SpecularColor = new SharpDX.Color4(0.3f, 0.3f, 0.3f, 1.0f),
+                    SpecularShininess = 30f
+                }
+            };
+
+            // 添加到STL视口
+            stlViewport.Items.Add(currentSTLMesh);
+
+            // 调整相机以适应模型
+            AdjustSTLCameraToFitMesh(mesh);
+        }
+
+        /// <summary>
+        /// 调整STL相机以适应网格模型
+        /// </summary>
+        private void AdjustSTLCameraToFitMesh(HelixToolkit.Wpf.SharpDX.MeshGeometry3D mesh)
+        {
+            if (mesh.Positions.Count == 0) return;
+
+            // 计算边界框
+            var positions = mesh.Positions;
+            var minX = positions.Min(p => p.X);
+            var maxX = positions.Max(p => p.X);
+            var minY = positions.Min(p => p.Y);
+            var maxY = positions.Max(p => p.Y);
+            var minZ = positions.Min(p => p.Z);
+            var maxZ = positions.Max(p => p.Z);
+
+            var center = new Vector3((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
+            var size = Math.Max(Math.Max(maxX - minX, maxY - minY), maxZ - minZ);
+            var distance = size * 2.0;
+
+            if (stlViewport.Camera is HelixToolkit.Wpf.SharpDX.PerspectiveCamera perspectiveCamera)
+            {
+                perspectiveCamera.Position = new Point3D(center.X + distance, center.Y + distance, center.Z + distance);
+                perspectiveCamera.LookDirection = new Vector3D(-distance, -distance, -distance);
+            }
+        }
+
         #endregion
 
         #endregion
@@ -980,6 +1727,18 @@ namespace SharpDX_PCV
     }
 
     #region 辅助类定义
+    /// <summary>
+    /// 点云文件信息
+    /// </summary>
+    public class PointCloudFileInfo
+    {
+        public string FilePath { get; set; } = string.Empty;
+        public string FileName { get; set; } = string.Empty;
+        public int StartIndex { get; set; }
+        public int PointCount { get; set; }
+        public int FileIndex { get; set; }
+    }
+
     /// <summary>
     /// 点云加载结果
     /// </summary>
@@ -1205,6 +1964,437 @@ namespace SharpDX_PCV
     }
 
     /// <summary>
+    /// STL转换器 - 将点云数据转换为三角网格
+    /// </summary>
+    public class STLConverter
+    {
+        /// <summary>
+        /// 进度回调委托
+        /// </summary>
+        public Action<double, string>? ProgressCallback { get; set; }
+
+        /// <summary>
+        /// 将点云转换为三角网格
+        /// </summary>
+        public HelixToolkit.Wpf.SharpDX.MeshGeometry3D ConvertPointCloudToMesh(List<Vector3> points)
+        {
+            if (points.Count < 3)
+            {
+                throw new ArgumentException("点云数据不足，无法生成三角网格");
+            }
+
+            ProgressCallback?.Invoke(0, "开始点云三角剖分...");
+
+            // 使用优化的网格生成算法
+            return CreateOptimizedMesh(points);
+        }
+
+        /// <summary>
+        /// 创建优化的网格（性能改进版本）
+        /// </summary>
+        private HelixToolkit.Wpf.SharpDX.MeshGeometry3D CreateOptimizedMesh(List<Vector3> points)
+        {
+            var mesh = new HelixToolkit.Wpf.SharpDX.MeshGeometry3D();
+
+            ProgressCallback?.Invoke(20, "创建网格结构...");
+
+            // 使用更高效的网格生成算法
+            var gridPoints = CreateOptimizedGrid(points);
+
+            ProgressCallback?.Invoke(60, "生成三角形...");
+
+            CreateTrianglesFromGrid(gridPoints, mesh);
+
+            ProgressCallback?.Invoke(90, "计算法向量...");
+
+            return mesh;
+        }
+
+        /// <summary>
+        /// 创建优化的网格（性能改进）
+        /// </summary>
+        private Vector3[,] CreateOptimizedGrid(List<Vector3> points)
+        {
+            // 计算边界
+            var minX = points.Min(p => p.X);
+            var maxX = points.Max(p => p.X);
+            var minY = points.Min(p => p.Y);
+            var maxY = points.Max(p => p.Y);
+
+            // 优化网格分辨率计算
+            int gridSize = CalculateOptimalGridSize(points.Count);
+
+            ProgressCallback?.Invoke(30, $"创建 {gridSize}x{gridSize} 网格...");
+
+            var grid = new Vector3[gridSize, gridSize];
+            var stepX = (maxX - minX) / (gridSize - 1);
+            var stepY = (maxY - minY) / (gridSize - 1);
+
+            // 为每个网格点找到最近的点云点
+            for (int i = 0; i < gridSize; i++)
+            {
+                for (int j = 0; j < gridSize; j++)
+                {
+                    var gridX = minX + i * stepX;
+                    var gridY = minY + j * stepY;
+
+                    // 找到最近的点
+                    var nearestPoint = FindNearestPoint(points, gridX, gridY);
+                    grid[i, j] = nearestPoint;
+                }
+            }
+
+            return grid;
+        }
+
+        /// <summary>
+        /// 计算最优网格大小
+        /// </summary>
+        private int CalculateOptimalGridSize(int pointCount)
+        {
+            // 根据点数量动态调整网格大小，平衡质量和性能
+            if (pointCount < 1000) return 15;
+            if (pointCount < 10000) return 25;
+            if (pointCount < 50000) return 35;
+            if (pointCount < 100000) return 45;
+            return Math.Min(60, (int)Math.Sqrt(pointCount / 50)); // 最大60x60网格
+        }
+
+        /// <summary>
+        /// 找到最近的点
+        /// </summary>
+        private Vector3 FindNearestPoint(List<Vector3> points, float targetX, float targetY)
+        {
+            var minDistance = float.MaxValue;
+            var nearestPoint = points[0];
+
+            foreach (var point in points)
+            {
+                var distance = (point.X - targetX) * (point.X - targetX) +
+                              (point.Y - targetY) * (point.Y - targetY);
+
+                if (distance < minDistance)
+                {
+                    minDistance = distance;
+                    nearestPoint = point;
+                }
+            }
+
+            return nearestPoint;
+        }
+
+        /// <summary>
+        /// 从网格创建三角形
+        /// </summary>
+        private void CreateTrianglesFromGrid(Vector3[,] grid, HelixToolkit.Wpf.SharpDX.MeshGeometry3D mesh)
+        {
+            if (grid == null || mesh == null)
+            {
+                throw new ArgumentNullException("网格或mesh对象为空");
+            }
+
+            int rows = grid.GetLength(0);
+            int cols = grid.GetLength(1);
+
+            // 确保集合已初始化
+            if (mesh.Positions == null)
+                mesh.Positions = new Vector3Collection();
+            if (mesh.TriangleIndices == null)
+                mesh.TriangleIndices = new IntCollection();
+
+            // 添加顶点
+            for (int i = 0; i < rows; i++)
+            {
+                for (int j = 0; j < cols; j++)
+                {
+                    mesh.Positions.Add(grid[i, j]);
+                }
+            }
+
+            // 创建三角形索引
+            for (int i = 0; i < rows - 1; i++)
+            {
+                for (int j = 0; j < cols - 1; j++)
+                {
+                    int topLeft = i * cols + j;
+                    int topRight = i * cols + (j + 1);
+                    int bottomLeft = (i + 1) * cols + j;
+                    int bottomRight = (i + 1) * cols + (j + 1);
+
+                    // 第一个三角形
+                    mesh.TriangleIndices.Add(topLeft);
+                    mesh.TriangleIndices.Add(bottomLeft);
+                    mesh.TriangleIndices.Add(topRight);
+
+                    // 第二个三角形
+                    mesh.TriangleIndices.Add(topRight);
+                    mesh.TriangleIndices.Add(bottomLeft);
+                    mesh.TriangleIndices.Add(bottomRight);
+                }
+            }
+
+            // 计算法向量（手动计算）
+            CalculateNormals(mesh);
+        }
+
+        /// <summary>
+        /// 导出STL文件
+        /// </summary>
+        public void ExportSTL(MeshGeometryModel3D meshModel, string filePath)
+        {
+            if (meshModel?.Geometry == null)
+            {
+                throw new ArgumentException("无效的网格模型");
+            }
+
+            var mesh = meshModel.Geometry as HelixToolkit.Wpf.SharpDX.MeshGeometry3D;
+            if (mesh == null)
+            {
+                throw new ArgumentException("网格几何体类型不正确");
+            }
+
+            ExportSTLAscii(mesh, filePath);
+        }
+
+        /// <summary>
+        /// 手动计算法向量
+        /// </summary>
+        private void CalculateNormals(HelixToolkit.Wpf.SharpDX.MeshGeometry3D mesh)
+        {
+            var normals = new Vector3Collection();
+            var positions = mesh.Positions;
+            var indices = mesh.TriangleIndices;
+
+            // 初始化法向量数组
+            for (int i = 0; i < positions.Count; i++)
+            {
+                normals.Add(Vector3.Zero);
+            }
+
+            // 计算每个三角形的法向量并累加到顶点
+            for (int i = 0; i < indices.Count; i += 3)
+            {
+                var i1 = indices[i];
+                var i2 = indices[i + 1];
+                var i3 = indices[i + 2];
+
+                var v1 = positions[i1];
+                var v2 = positions[i2];
+                var v3 = positions[i3];
+
+                var edge1 = v2 - v1;
+                var edge2 = v3 - v1;
+                var normal = Vector3.Cross(edge1, edge2);
+
+                normals[i1] += normal;
+                normals[i2] += normal;
+                normals[i3] += normal;
+            }
+
+            // 归一化法向量
+            for (int i = 0; i < normals.Count; i++)
+            {
+                normals[i] = Vector3.Normalize(normals[i]);
+            }
+
+            mesh.Normals = normals;
+        }
+
+        /// <summary>
+        /// 导出ASCII格式的STL文件
+        /// </summary>
+        private void ExportSTLAscii(HelixToolkit.Wpf.SharpDX.MeshGeometry3D mesh, string filePath)
+        {
+            using (var writer = new StreamWriter(filePath))
+            {
+                writer.WriteLine("solid PointCloudMesh");
+
+                var positions = mesh.Positions;
+                var indices = mesh.TriangleIndices;
+                var normals = mesh.Normals;
+
+                for (int i = 0; i < indices.Count; i += 3)
+                {
+                    var v1 = positions[indices[i]];
+                    var v2 = positions[indices[i + 1]];
+                    var v3 = positions[indices[i + 2]];
+
+                    // 计算法向量（如果没有预计算的话）
+                    Vector3 normal;
+                    if (normals != null && normals.Count > indices[i])
+                    {
+                        normal = normals[indices[i]];
+                    }
+                    else
+                    {
+                        var edge1 = v2 - v1;
+                        var edge2 = v3 - v1;
+                        normal = Vector3.Cross(edge1, edge2);
+                        normal = Vector3.Normalize(normal);
+                    }
+
+                    writer.WriteLine($"  facet normal {normal.X:F6} {normal.Y:F6} {normal.Z:F6}");
+                    writer.WriteLine("    outer loop");
+                    writer.WriteLine($"      vertex {v1.X:F6} {v1.Y:F6} {v1.Z:F6}");
+                    writer.WriteLine($"      vertex {v2.X:F6} {v2.Y:F6} {v2.Z:F6}");
+                    writer.WriteLine($"      vertex {v3.X:F6} {v3.Y:F6} {v3.Z:F6}");
+                    writer.WriteLine("    endloop");
+                    writer.WriteLine("  endfacet");
+                }
+
+                writer.WriteLine("endsolid PointCloudMesh");
+            }
+        }
+    }
+
+    /// <summary>
+    /// STL文件加载器
+    /// </summary>
+    public class STLLoader
+    {
+        /// <summary>
+        /// 加载STL文件
+        /// </summary>
+        public HelixToolkit.Wpf.SharpDX.MeshGeometry3D LoadSTL(string filePath)
+        {
+            if (!File.Exists(filePath))
+            {
+                throw new FileNotFoundException($"STL文件不存在: {filePath}");
+            }
+
+            // 检查是ASCII还是二进制格式
+            if (IsAsciiSTL(filePath))
+            {
+                return LoadAsciiSTL(filePath);
+            }
+            else
+            {
+                return LoadBinarySTL(filePath);
+            }
+        }
+
+        /// <summary>
+        /// 检查是否为ASCII格式STL
+        /// </summary>
+        private bool IsAsciiSTL(string filePath)
+        {
+            using (var reader = new StreamReader(filePath))
+            {
+                var firstLine = reader.ReadLine()?.Trim().ToLower();
+                return firstLine?.StartsWith("solid") == true;
+            }
+        }
+
+        /// <summary>
+        /// 加载ASCII格式STL
+        /// </summary>
+        private HelixToolkit.Wpf.SharpDX.MeshGeometry3D LoadAsciiSTL(string filePath)
+        {
+            var mesh = new HelixToolkit.Wpf.SharpDX.MeshGeometry3D();
+            if (mesh.Positions == null) mesh.Positions = new Vector3Collection();
+            if (mesh.TriangleIndices == null) mesh.TriangleIndices = new IntCollection();
+            if (mesh.Normals == null) mesh.Normals = new Vector3Collection();
+
+            using (var reader = new StreamReader(filePath))
+            {
+                string? line;
+                Vector3 normal = Vector3.Zero;
+                var vertices = new List<Vector3>();
+
+                while ((line = reader.ReadLine()) != null)
+                {
+                    line = line.Trim().ToLower();
+
+                    if (line.StartsWith("facet normal"))
+                    {
+                        var parts = line.Split(' ');
+                        if (parts.Length >= 5)
+                        {
+                            float.TryParse(parts[2], out normal.X);
+                            float.TryParse(parts[3], out normal.Y);
+                            float.TryParse(parts[4], out normal.Z);
+                        }
+                        vertices.Clear();
+                    }
+                    else if (line.StartsWith("vertex"))
+                    {
+                        var parts = line.Split(' ');
+                        if (parts.Length >= 4)
+                        {
+                            var vertex = new Vector3();
+                            float.TryParse(parts[1], out vertex.X);
+                            float.TryParse(parts[2], out vertex.Y);
+                            float.TryParse(parts[3], out vertex.Z);
+                            vertices.Add(vertex);
+                        }
+                    }
+                    else if (line.StartsWith("endfacet") && vertices.Count == 3)
+                    {
+                        // 添加三角形
+                        int startIndex = mesh.Positions.Count;
+                        foreach (var vertex in vertices)
+                        {
+                            mesh.Positions.Add(vertex);
+                            mesh.Normals.Add(normal);
+                        }
+
+                        mesh.TriangleIndices.Add(startIndex);
+                        mesh.TriangleIndices.Add(startIndex + 1);
+                        mesh.TriangleIndices.Add(startIndex + 2);
+                    }
+                }
+            }
+
+            return mesh;
+        }
+
+        /// <summary>
+        /// 加载二进制格式STL
+        /// </summary>
+        private HelixToolkit.Wpf.SharpDX.MeshGeometry3D LoadBinarySTL(string filePath)
+        {
+            var mesh = new HelixToolkit.Wpf.SharpDX.MeshGeometry3D();
+            if (mesh.Positions == null) mesh.Positions = new Vector3Collection();
+            if (mesh.TriangleIndices == null) mesh.TriangleIndices = new IntCollection();
+            if (mesh.Normals == null) mesh.Normals = new Vector3Collection();
+
+            using (var reader = new BinaryReader(File.OpenRead(filePath)))
+            {
+                // 跳过80字节头部
+                reader.ReadBytes(80);
+
+                // 读取三角形数量
+                uint triangleCount = reader.ReadUInt32();
+
+                for (int i = 0; i < triangleCount; i++)
+                {
+                    // 读取法向量
+                    var normal = new Vector3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
+
+                    // 读取三个顶点
+                    int startIndex = mesh.Positions.Count;
+                    for (int j = 0; j < 3; j++)
+                    {
+                        var vertex = new Vector3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
+                        mesh.Positions.Add(vertex);
+                        mesh.Normals.Add(normal);
+                    }
+
+                    // 添加三角形索引
+                    mesh.TriangleIndices.Add(startIndex);
+                    mesh.TriangleIndices.Add(startIndex + 1);
+                    mesh.TriangleIndices.Add(startIndex + 2);
+
+                    // 跳过属性字节计数
+                    reader.ReadUInt16();
+                }
+            }
+
+            return mesh;
+        }
+    }
+
+    /// <summary>
     /// 点云可视化器 - 支持流式渲染和高级颜色映射
     /// </summary>
     public class PointCloudVisualizer
@@ -1216,18 +2406,35 @@ namespace SharpDX_PCV
         // 颜色映射模式
         public enum ColorMappingMode
         {
-            HeightBased,    // 基于高度(Z坐标)
-            DepthBased,     // 基于深度(距离相机)
-            DensityBased,   // 基于点云密度
-            Rainbow,        // 彩虹色谱
-            Thermal         // 热力图色谱
+            ByFile,         // 按文件区分颜色
+            HeightBased,    // 基于高度(Z坐标) - 科学实用
+            Uniform,        // 统一颜色 - 简洁清晰
+            Grayscale       // 灰度渐变 - 专业显示
         }
 
-        public ColorMappingMode CurrentColorMode { get; set; } = ColorMappingMode.Rainbow;
+        public ColorMappingMode CurrentColorMode { get; set; } = ColorMappingMode.ByFile;
+        private List<PointCloudFileInfo> fileInfoList = new List<PointCloudFileInfo>();
+        private List<int> pointFileIndices = new List<int>();
 
         public PointCloudVisualizer(Viewport3DX viewport)
         {
             this.viewport = viewport;
+        }
+
+        /// <summary>
+        /// 设置文件信息列表，用于按文件着色
+        /// </summary>
+        public void SetFileInfoList(List<PointCloudFileInfo> fileInfos)
+        {
+            this.fileInfoList = fileInfos;
+        }
+
+        /// <summary>
+        /// 设置点的文件索引信息
+        /// </summary>
+        public void SetPointFileIndices(List<int> fileIndices)
+        {
+            this.pointFileIndices = fileIndices;
         }
 
         /// <summary>
@@ -1307,202 +2514,74 @@ namespace SharpDX_PCV
 
             System.Diagnostics.Debug.WriteLine($"[颜色映射] 开始创建颜色映射，模式: {CurrentColorMode}, 点数: {points.Count}");
 
-            // 临时测试：强制使用测试颜色来验证系统
-            if (CurrentColorMode == ColorMappingMode.Rainbow)
-            {
-                System.Diagnostics.Debug.WriteLine("[颜色映射] 使用测试颜色进行调试");
-                return CreateTestColors(points);
-            }
-
             switch (CurrentColorMode)
             {
+                case ColorMappingMode.ByFile:
+                    return CreateFileBasedColors(points);
                 case ColorMappingMode.HeightBased:
                     return CreateHeightBasedColors(points);
-                case ColorMappingMode.DepthBased:
-                    return CreateDepthBasedColors(points);
-                case ColorMappingMode.DensityBased:
-                    return CreateDensityBasedColors(points);
-                case ColorMappingMode.Rainbow:
-                    return CreateRainbowColors(points);
-                case ColorMappingMode.Thermal:
-                    return CreateThermalColors(points);
+                case ColorMappingMode.Uniform:
+                    return CreateUniformColors(points);
+                case ColorMappingMode.Grayscale:
+                    return CreateGrayscaleColors(points);
                 default:
-                    return CreateTestColors(points); // 默认使用测试颜色
+                    return CreateFileBasedColors(points); // 默认按文件着色
             }
         }
 
         /// <summary>
-        /// 创建测试颜色 - 用于调试
+        /// 按文件创建颜色 - 不同文件使用不同颜色便于区分
         /// </summary>
-        private Color4Collection CreateTestColors(List<Vector3> points)
+        private Color4Collection CreateFileBasedColors(List<Vector3> points)
         {
             var colors = new Color4Collection();
-            var colorList = new Color4[]
+
+            // 定义一组易于区分的颜色
+            var fileColors = new Color4[]
             {
-                new Color4(1.0f, 0.0f, 0.0f, 1.0f), // 红色
-                new Color4(0.0f, 1.0f, 0.0f, 1.0f), // 绿色
-                new Color4(0.0f, 0.0f, 1.0f, 1.0f), // 蓝色
-                new Color4(1.0f, 1.0f, 0.0f, 1.0f), // 黄色
-                new Color4(1.0f, 0.0f, 1.0f, 1.0f), // 洋红
-                new Color4(0.0f, 1.0f, 1.0f, 1.0f)  // 青色
+                new Color4(0.2f, 0.6f, 1.0f, 1.0f),  // 蓝色
+                new Color4(1.0f, 0.4f, 0.2f, 1.0f),  // 橙色
+                new Color4(0.2f, 0.8f, 0.3f, 1.0f),  // 绿色
+                new Color4(0.9f, 0.2f, 0.6f, 1.0f),  // 粉红色
+                new Color4(0.7f, 0.5f, 0.9f, 1.0f),  // 紫色
+                new Color4(1.0f, 0.8f, 0.2f, 1.0f),  // 黄色
+                new Color4(0.3f, 0.9f, 0.9f, 1.0f),  // 青色
+                new Color4(0.9f, 0.6f, 0.3f, 1.0f),  // 棕色
+                new Color4(0.5f, 0.5f, 0.5f, 1.0f),  // 灰色
+                new Color4(0.8f, 0.2f, 0.2f, 1.0f)   // 红色
             };
 
+            // 为每个点分配对应文件的颜色
             for (int i = 0; i < points.Count; i++)
             {
-                colors.Add(colorList[i % colorList.Length]);
+                int fileIndex = GetFileIndexForPoint(i);
+                var color = fileColors[fileIndex % fileColors.Length];
+                colors.Add(color);
             }
 
-            System.Diagnostics.Debug.WriteLine($"[测试颜色] 生成了 {colors.Count} 个测试颜色");
+            // 调试信息：统计每个文件的点数
+            var filePointCounts = new Dictionary<int, int>();
+            for (int i = 0; i < points.Count; i++)
+            {
+                int fileIndex = GetFileIndexForPoint(i);
+                filePointCounts[fileIndex] = filePointCounts.GetValueOrDefault(fileIndex, 0) + 1;
+            }
+
+            System.Diagnostics.Debug.WriteLine($"[按文件着色] 生成了 {colors.Count} 个颜色，涉及 {fileInfoList.Count} 个文件");
+            System.Diagnostics.Debug.WriteLine($"[按文件着色] 点文件索引数组长度: {pointFileIndices.Count}");
+            foreach (var kvp in filePointCounts)
+            {
+                var fileName = kvp.Key < fileInfoList.Count ? fileInfoList[kvp.Key].FileName : $"文件{kvp.Key}";
+                System.Diagnostics.Debug.WriteLine($"[按文件着色] 文件 {kvp.Key} ({fileName}): {kvp.Value} 个点");
+            }
+
             return colors;
         }
 
         /// <summary>
-        /// 基于高度(Z坐标)的颜色映射
+        /// 基于高度(Z坐标)的颜色映射 - 科学实用的高度可视化
         /// </summary>
         private Color4Collection CreateHeightBasedColors(List<Vector3> points)
-        {
-            var colors = new Color4Collection();
-            var minZ = points.Min(p => p.Z);
-            var maxZ = points.Max(p => p.Z);
-            var zRange = maxZ - minZ;
-
-            foreach (var point in points)
-            {
-                var normalizedZ = zRange > 0 ? (point.Z - minZ) / zRange : 0.5f;
-
-                // 蓝色(低) -> 绿色(中) -> 红色(高)
-                float r, g, b;
-                if (normalizedZ < 0.5f)
-                {
-                    // 蓝色到绿色
-                    r = 0.0f;
-                    g = normalizedZ * 2.0f;
-                    b = 1.0f - normalizedZ * 2.0f;
-                }
-                else
-                {
-                    // 绿色到红色
-                    r = (normalizedZ - 0.5f) * 2.0f;
-                    g = 1.0f - (normalizedZ - 0.5f) * 2.0f;
-                    b = 0.0f;
-                }
-
-                colors.Add(new Color4(r, g, b, 1.0f));
-            }
-
-            return colors;
-        }
-
-        /// <summary>
-        /// 基于深度(距离相机)的颜色映射
-        /// </summary>
-        private Color4Collection CreateDepthBasedColors(List<Vector3> points)
-        {
-            var colors = new Color4Collection();
-
-            // 计算每个点到原点的距离作为深度
-            var distances = points.Select(p => (float)Math.Sqrt(p.X * p.X + p.Y * p.Y + p.Z * p.Z)).ToList();
-            var minDist = distances.Min();
-            var maxDist = distances.Max();
-            var distRange = maxDist - minDist;
-
-            for (int i = 0; i < points.Count; i++)
-            {
-                var normalizedDist = distRange > 0 ? (distances[i] - minDist) / distRange : 0.5f;
-
-                // 近处亮色，远处暗色，增强深度感
-                var intensity = 1.0f - normalizedDist * 0.7f; // 保持一定亮度
-                colors.Add(new Color4(0.2f + intensity * 0.8f, 0.4f + intensity * 0.6f, 0.8f + intensity * 0.2f, 1.0f));
-            }
-
-            return colors;
-        }
-
-        /// <summary>
-        /// 基于点云密度的颜色映射 - 优化版本
-        /// </summary>
-        private Color4Collection CreateDensityBasedColors(List<Vector3> points)
-        {
-            var colors = new Color4Collection();
-
-            // 对于大数据集，使用简化的密度估算
-            if (points.Count > 10000)
-            {
-                return CreateSimplifiedDensityColors(points);
-            }
-
-            const float searchRadius = 2.0f;
-            var densities = new List<float>();
-
-            // 使用空间分割优化密度计算
-            for (int i = 0; i < points.Count; i++)
-            {
-                var currentPoint = points[i];
-                int neighborCount = 0;
-
-                // 只检查附近的点，减少计算量
-                for (int j = Math.Max(0, i - 100); j < Math.Min(points.Count, i + 100); j++)
-                {
-                    if (i == j) continue;
-
-                    var distance = Vector3.Distance(currentPoint, points[j]);
-                    if (distance <= searchRadius)
-                    {
-                        neighborCount++;
-                    }
-                }
-
-                densities.Add(neighborCount);
-            }
-
-            var minDensity = densities.Min();
-            var maxDensity = densities.Max();
-            var densityRange = maxDensity - minDensity;
-
-            for (int i = 0; i < points.Count; i++)
-            {
-                var normalizedDensity = densityRange > 0 ? (densities[i] - minDensity) / densityRange : 0.5f;
-
-                // 低密度紫色，高密度黄色
-                colors.Add(new Color4(
-                    0.5f + normalizedDensity * 0.5f,  // R: 紫到黄
-                    normalizedDensity * 0.8f,         // G: 增强黄色
-                    1.0f - normalizedDensity,         // B: 紫到黄
-                    1.0f));
-            }
-
-            return colors;
-        }
-
-        /// <summary>
-        /// 简化的密度颜色映射（用于大数据集）
-        /// </summary>
-        private Color4Collection CreateSimplifiedDensityColors(List<Vector3> points)
-        {
-            var colors = new Color4Collection();
-
-            // 基于点的索引位置创建伪密度效果
-            for (int i = 0; i < points.Count; i++)
-            {
-                var normalizedIndex = (float)i / points.Count;
-
-                // 创建波浪状密度效果
-                var density = (float)(Math.Sin(normalizedIndex * Math.PI * 8) * 0.5 + 0.5);
-
-                colors.Add(new Color4(
-                    0.5f + density * 0.5f,
-                    density * 0.8f,
-                    1.0f - density,
-                    1.0f));
-            }
-
-            return colors;
-        }
-
-        /// <summary>
-        /// 彩虹色谱颜色映射
-        /// </summary>
-        private Color4Collection CreateRainbowColors(List<Vector3> points)
         {
             var colors = new Color4Collection();
             if (points.Count == 0) return colors;
@@ -1511,28 +2590,78 @@ namespace SharpDX_PCV
             var maxZ = points.Max(p => p.Z);
             var zRange = maxZ - minZ;
 
-            System.Diagnostics.Debug.WriteLine($"[彩虹颜色] Z范围: {minZ:F3} - {maxZ:F3}, 范围: {zRange:F3}");
-
             foreach (var point in points)
             {
                 var normalizedZ = zRange > 0 ? (point.Z - minZ) / zRange : 0.5f;
 
-                // HSV到RGB的转换，创建彩虹效果
-                var hue = normalizedZ * 300.0f; // 0-300度，避免回到红色
-                var color = HsvToRgb(hue, 1.0f, 1.0f);
-                colors.Add(new Color4(color.R, color.G, color.B, 1.0f));
+                // 使用更科学的蓝-绿-黄-红渐变，类似地形图
+                float r, g, b;
+                if (normalizedZ < 0.25f)
+                {
+                    // 深蓝到浅蓝
+                    r = 0.0f;
+                    g = 0.2f + normalizedZ * 1.2f;
+                    b = 0.8f + normalizedZ * 0.8f;
+                }
+                else if (normalizedZ < 0.5f)
+                {
+                    // 浅蓝到绿色
+                    var t = (normalizedZ - 0.25f) * 4.0f;
+                    r = 0.0f;
+                    g = 0.5f + t * 0.5f;
+                    b = 1.0f - t * 0.7f;
+                }
+                else if (normalizedZ < 0.75f)
+                {
+                    // 绿色到黄色
+                    var t = (normalizedZ - 0.5f) * 4.0f;
+                    r = t * 0.8f;
+                    g = 1.0f;
+                    b = 0.3f - t * 0.3f;
+                }
+                else
+                {
+                    // 黄色到红色
+                    var t = (normalizedZ - 0.75f) * 4.0f;
+                    r = 0.8f + t * 0.2f;
+                    g = 1.0f - t * 0.6f;
+                    b = 0.0f;
+                }
+
+                colors.Add(new Color4(r, g, b, 1.0f));
             }
 
-            System.Diagnostics.Debug.WriteLine($"[彩虹颜色] 生成了 {colors.Count} 个颜色");
+            System.Diagnostics.Debug.WriteLine($"[高度着色] Z范围: {minZ:F3} - {maxZ:F3}, 生成 {colors.Count} 个颜色");
             return colors;
         }
 
         /// <summary>
-        /// 热力图色谱颜色映射
+        /// 统一颜色 - 简洁清晰的单色显示
         /// </summary>
-        private Color4Collection CreateThermalColors(List<Vector3> points)
+        private Color4Collection CreateUniformColors(List<Vector3> points)
         {
             var colors = new Color4Collection();
+
+            // 使用专业的中性蓝色，对眼睛友好且易于观察细节
+            var uniformColor = new Color4(0.3f, 0.6f, 0.9f, 1.0f);
+
+            for (int i = 0; i < points.Count; i++)
+            {
+                colors.Add(uniformColor);
+            }
+
+            System.Diagnostics.Debug.WriteLine($"[统一颜色] 生成 {colors.Count} 个统一颜色");
+            return colors;
+        }
+
+        /// <summary>
+        /// 灰度渐变 - 专业的黑白显示，突出形状和结构
+        /// </summary>
+        private Color4Collection CreateGrayscaleColors(List<Vector3> points)
+        {
+            var colors = new Color4Collection();
+            if (points.Count == 0) return colors;
+
             var minZ = points.Min(p => p.Z);
             var maxZ = points.Max(p => p.Z);
             var zRange = maxZ - minZ;
@@ -1541,55 +2670,40 @@ namespace SharpDX_PCV
             {
                 var normalizedZ = zRange > 0 ? (point.Z - minZ) / zRange : 0.5f;
 
-                // 热力图：黑色 -> 红色 -> 黄色 -> 白色
-                float r, g, b;
-                if (normalizedZ < 0.33f)
-                {
-                    // 黑色到红色
-                    r = normalizedZ * 3.0f;
-                    g = 0.0f;
-                    b = 0.0f;
-                }
-                else if (normalizedZ < 0.66f)
-                {
-                    // 红色到黄色
-                    r = 1.0f;
-                    g = (normalizedZ - 0.33f) * 3.0f;
-                    b = 0.0f;
-                }
-                else
-                {
-                    // 黄色到白色
-                    r = 1.0f;
-                    g = 1.0f;
-                    b = (normalizedZ - 0.66f) * 3.0f;
-                }
-
-                colors.Add(new Color4(r, g, b, 1.0f));
+                // 从深灰到浅灰的渐变，保持良好的对比度
+                var intensity = 0.2f + normalizedZ * 0.6f; // 0.2到0.8的范围
+                colors.Add(new Color4(intensity, intensity, intensity, 1.0f));
             }
 
+            System.Diagnostics.Debug.WriteLine($"[灰度渐变] Z范围: {minZ:F3} - {maxZ:F3}, 生成 {colors.Count} 个颜色");
             return colors;
         }
 
         /// <summary>
-        /// HSV到RGB颜色转换
+        /// 获取指定点索引对应的文件索引
         /// </summary>
-        private (float R, float G, float B) HsvToRgb(float h, float s, float v)
+        private int GetFileIndexForPoint(int pointIndex)
         {
-            h = h % 360.0f;
-            var c = v * s;
-            var x = c * (1 - Math.Abs((h / 60.0f) % 2 - 1));
-            var m = v - c;
+            // 如果有预计算的文件索引，直接使用
+            if (pointFileIndices.Count > pointIndex && pointIndex >= 0)
+            {
+                return pointFileIndices[pointIndex];
+            }
 
-            float r, g, b;
-            if (h < 60) { r = c; g = x; b = 0; }
-            else if (h < 120) { r = x; g = c; b = 0; }
-            else if (h < 180) { r = 0; g = c; b = x; }
-            else if (h < 240) { r = 0; g = x; b = c; }
-            else if (h < 300) { r = x; g = 0; b = c; }
-            else { r = c; g = 0; b = x; }
+            // 回退到原始方法（用于兼容性）
+            if (fileInfoList.Count == 0) return 0;
 
-            return ((float)(r + m), (float)(g + m), (float)(b + m));
+            int currentIndex = 0;
+            for (int i = 0; i < fileInfoList.Count; i++)
+            {
+                if (pointIndex >= currentIndex && pointIndex < currentIndex + fileInfoList[i].PointCount)
+                {
+                    return i;
+                }
+                currentIndex += fileInfoList[i].PointCount;
+            }
+
+            return fileInfoList.Count - 1; // 默认返回最后一个文件的索引
         }
 
         /// <summary>

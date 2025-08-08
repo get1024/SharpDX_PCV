@@ -6,15 +6,20 @@
         xmlns:local="clr-namespace:SharpDX_PCV"
         xmlns:hx="http://helix-toolkit.org/wpf/SharpDX"
         mc:Ignorable="d"
-        Title="Point Cloud Viewer" Height="600" Width="1000">
+        Title="Point Cloud Viewer" Height="600" Width="1200">
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="5"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
 
         <!-- Top Control Panel -->
-        <Border Grid.Row="0" Background="#F0F0F0" Padding="10" BorderBrush="#CCCCCC" BorderThickness="0,0,0,1">
+        <Border Grid.Row="0" Grid.ColumnSpan="3" Background="#F0F0F0" Padding="10" BorderBrush="#CCCCCC" BorderThickness="0,0,0,1">
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                 <Button x:Name="btnOpenFile"
                         Content="选择文件"
@@ -36,60 +41,171 @@
                 <ComboBox x:Name="ColorModeComboBox"
                           Width="120" VerticalAlignment="Center"
                           SelectionChanged="ColorModeComboBox_SelectionChanged">
-                    <ComboBoxItem Content="彩虹色谱" Tag="Rainbow" IsSelected="True"/>
+                    <ComboBoxItem Content="按文件区分" Tag="ByFile" IsSelected="True"/>
                     <ComboBoxItem Content="高度映射" Tag="HeightBased"/>
-                    <ComboBoxItem Content="深度映射" Tag="DepthBased"/>
-                    <ComboBoxItem Content="热力图" Tag="Thermal"/>
-                    <ComboBoxItem Content="密度映射" Tag="DensityBased"/>
+                    <ComboBoxItem Content="统一颜色" Tag="Uniform"/>
+                    <ComboBoxItem Content="灰度渐变" Tag="Grayscale"/>
                 </ComboBox>
 
-                <!-- 状态显示 -->
-                <TextBlock x:Name="txtStatus" Text="就绪"
-                           VerticalAlignment="Center" Margin="20,0,0,0"
-                           Foreground="DarkBlue"/>
+                <!-- 输出目录选择 -->
+                <TextBlock Text="输出目录:" VerticalAlignment="Center" Margin="20,0,5,0"/>
+                <TextBox x:Name="txtOutputDir" Width="260" VerticalAlignment="Center" IsReadOnly="True"/>
+                <Button x:Name="btnBrowseOutputDir" Content="浏览..." Margin="5,0,0,0" Padding="10,5" Click="BtnBrowseOutputDir_Click"/>
+
+                <!-- 点云转STL按钮 -->
+                <Button x:Name="btnConvertToSTL"
+                        Content="点云→STL"
+                        Padding="10,5" Margin="20,0,0,0"
+                        Click="BtnConvertToSTL_Click"
+                        IsEnabled="False"
+                        Background="#2196F3" Foreground="Black"/>
+
+                <!-- STL导出按钮 -->
+                <Button x:Name="btnExportSTL"
+                        Content="导出STL文件"
+                        Padding="10,5" Margin="10,0,0,0"
+                        Click="BtnExportSTL_Click"
+                        IsEnabled="False"
+                        Background="#4CAF50" Foreground="Black"/>
             </StackPanel>
         </Border>
 
-        <!-- 3D Viewport -->
-        <hx:Viewport3DX x:Name="helixViewport"
-                        Grid.Row="1"
-                Background="WhiteSmoke"
-                CameraMode="Inspect"
-                ZoomExtentsWhenLoaded="True"
-                ShowViewCube="True"
-                CameraRotationMode="Trackball"
-                ZoomRectangleCursor="ScrollSE"
-                ZoomCursor="SizeNS"
-                RotateCursor="SizeAll"
-                PanCursor="Hand"
-                ChangeFieldOfViewCursor="ScrollNS"
-                ShowCoordinateSystem="True"
-                BorderThickness="1"
-                BorderBrush="Gray"
-                Margin="5"
-                EnableSwapChainRendering="True"
-                EnableSSAO="False"
-                MSAA="Two">
+        <!-- 左侧点云显示区域 -->
+        <Grid Grid.Row="1" Grid.Column="0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
 
-            <!-- Effects Manager -->
-            <hx:Viewport3DX.EffectsManager>
-                <hx:DefaultEffectsManager />
-            </hx:Viewport3DX.EffectsManager>
+            <!-- 左侧标题 -->
+            <TextBlock Grid.Row="0" Text="点云预览 (TXT)"
+                       FontWeight="Bold" FontSize="14"
+                       Margin="10,5" HorizontalAlignment="Center"
+                       Foreground="DarkBlue"/>
 
-            <!-- Camera Configuration -->
-            <hx:Viewport3DX.Camera>
-                <hx:OrthographicCamera x:Name="MainCamera"
-                    UpDirection="0 0 1"
-                    NearPlaneDistance="0.00001"
-                    FarPlaneDistance="1000000000"/>
-            </hx:Viewport3DX.Camera>
+            <!-- 点云3D视口 -->
+            <hx:Viewport3DX x:Name="helixViewport"
+                            Grid.Row="1"
+                    Background="WhiteSmoke"
+                    CameraMode="Inspect"
+                    ZoomExtentsWhenLoaded="True"
+                    ShowViewCube="True"
+                    CameraRotationMode="Trackball"
+                    ZoomRectangleCursor="ScrollSE"
+                    ZoomCursor="SizeNS"
+                    RotateCursor="SizeAll"
+                    PanCursor="Hand"
+                    ChangeFieldOfViewCursor="ScrollNS"
+                    ShowCoordinateSystem="True"
+                    BorderThickness="1"
+                    BorderBrush="Gray"
+                    Margin="5"
+                    EnableSwapChainRendering="True"
+                    EnableSSAO="False"
+                    MSAA="Two">
 
-            <!-- Lighting Setup -->
-            <hx:AmbientLight3D Color="#444444" />
-            <hx:DirectionalLight3D Direction="-1,-1,-1" Color="White" />
-            <hx:DirectionalLight3D Direction="1,1,1" Color="#CCCCCC" />
+                <!-- Effects Manager -->
+                <hx:Viewport3DX.EffectsManager>
+                    <hx:DefaultEffectsManager />
+                </hx:Viewport3DX.EffectsManager>
 
-        </hx:Viewport3DX>
+                <!-- Camera Configuration -->
+                <hx:Viewport3DX.Camera>
+                    <hx:OrthographicCamera x:Name="MainCamera"
+                        UpDirection="0 0 1"
+                        NearPlaneDistance="0.00000000000001"
+                        FarPlaneDistance="10000000000000"/>
+                </hx:Viewport3DX.Camera>
+
+                <!-- Lighting Setup -->
+                <hx:AmbientLight3D Color="#444444" />
+                <hx:DirectionalLight3D Direction="-1,-1,-1" Color="White" />
+                <hx:DirectionalLight3D Direction="1,1,1" Color="#CCCCCC" />
+
+            </hx:Viewport3DX>
+
+            <!-- 左侧状态显示 -->
+            <Border Grid.Row="2" Background="#F8F8F8" Padding="10" BorderBrush="#DDDDDD" BorderThickness="0,1,0,0">
+                <StackPanel>
+                    <TextBlock Text="系统状态" FontWeight="Bold" FontSize="12" Margin="0,0,0,5"/>
+                    <TextBlock x:Name="txtStatus" Text="就绪" FontSize="11"
+                               Foreground="DarkBlue" TextWrapping="Wrap"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- 分隔条 -->
+        <GridSplitter Grid.Row="1" Grid.Column="1"
+                      Width="5" HorizontalAlignment="Stretch"
+                      Background="#CCCCCC" ResizeDirection="Columns"/>
+
+        <!-- 右侧STL显示区域 -->
+        <Grid Grid.Row="1" Grid.Column="2">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- 右侧标题 -->
+            <TextBlock Grid.Row="0" Text="STL模型预览"
+                       FontWeight="Bold" FontSize="14"
+                       Margin="10,5" HorizontalAlignment="Center"
+                       Foreground="DarkGreen"/>
+
+            <!-- STL 3D视口 -->
+            <hx:Viewport3DX x:Name="stlViewport"
+                            Grid.Row="1"
+                    Background="LightGray"
+                    CameraMode="Inspect"
+                    ZoomExtentsWhenLoaded="True"
+                    ShowViewCube="True"
+                    CameraRotationMode="Trackball"
+                    ZoomRectangleCursor="ScrollSE"
+                    ZoomCursor="SizeNS"
+                    RotateCursor="SizeAll"
+                    PanCursor="Hand"
+                    ChangeFieldOfViewCursor="ScrollNS"
+                    ShowCoordinateSystem="True"
+                    BorderThickness="1"
+                    BorderBrush="Gray"
+                    Margin="5"
+                    EnableSwapChainRendering="True"
+                    EnableSSAO="False"
+                    MSAA="Two">
+
+                <!-- Effects Manager -->
+                <hx:Viewport3DX.EffectsManager>
+                    <hx:DefaultEffectsManager />
+                </hx:Viewport3DX.EffectsManager>
+
+                <!-- Camera Configuration -->
+                <hx:Viewport3DX.Camera>
+                    <hx:PerspectiveCamera x:Name="STLCamera"
+                        UpDirection="0 0 1"
+                        NearPlaneDistance="0.1"
+                        FarPlaneDistance="1000"/>
+                </hx:Viewport3DX.Camera>
+
+                <!-- Lighting Setup -->
+                <hx:AmbientLight3D Color="#666666" />
+                <hx:DirectionalLight3D Direction="-1,-1,-1" Color="White" />
+                <hx:DirectionalLight3D Direction="1,1,1" Color="#AAAAAA" />
+
+            </hx:Viewport3DX>
+
+            <!-- 右侧进度显示 -->
+            <Border Grid.Row="2" Background="#F8F8F8" Padding="10" BorderBrush="#DDDDDD" BorderThickness="0,1,0,0">
+                <StackPanel>
+                    <TextBlock Text="STL转换进度" FontWeight="Bold" FontSize="12" Margin="0,0,0,5"/>
+                    <ProgressBar x:Name="rightProgressBar" Height="20" Margin="0,0,0,5"
+                                 Minimum="0" Maximum="100" Value="0"/>
+                    <TextBlock x:Name="rightProgressText" Text="就绪" FontSize="11"
+                               Foreground="DarkGreen" TextWrapping="Wrap"/>
+                </StackPanel>
+            </Border>
+        </Grid>
 
     </Grid>
 </Window>

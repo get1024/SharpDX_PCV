@@ -12,4 +12,15 @@
     <PackageReference Include="HelixToolkit.Wpf.SharpDX" Version="2.27.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="pyFunc\" />
+  </ItemGroup>
+
+  <!-- 将 pyFunc 文件夹复制到输出目录（包含虚拟环境和脚本） -->
+  <ItemGroup>
+    <None Include="pyFunc\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>
