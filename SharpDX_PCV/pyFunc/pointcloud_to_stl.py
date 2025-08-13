@@ -13,13 +13,29 @@ from pathlib import Path
 import argparse
 import time
 from scipy.spatial import cKDTree
+from typing import List, Tuple, Optional, Dict, Any
 
 
 class PointCloudToSTLConverter:
-    """点云到STL转换器"""
-    
+    """点云到STL转换器 - 支持平面检测和四角化优化"""
+
     def __init__(self, progress_callback=None):
         self.progress_callback = progress_callback
+
+        # 平面检测参数（针对毫米单位数据优化）
+        self.plane_config = {
+            'distance_threshold': 0.1,      # 平面距离阈值 (mm)
+            'min_plane_points': 500,        # 最小平面点数
+            'ransac_n': 3,                  # RANSAC采样点数
+            'num_iterations': 5000,         # RANSAC迭代次数
+            'max_planes': 10,               # 最大平面数量
+        }
+
+        # 重建参数
+        self.recon_config = {
+            'method': 'hybrid',             # 混合方法：先平面四角化，再重建残余
+            'merge_epsilon': 1e-3,          # 顶点合并阈值 (mm)
+        }
         
     def log_progress(self, progress, message):
         """记录进度"""
@@ -193,59 +209,253 @@ class PointCloudToSTLConverter:
             pass
 
         return pcd
-    
+
+    def detect_planes(self, pcd):
+        """使用RANSAC检测平面"""
+        self.log_progress(47, "开始平面检测...")
+
+        planes = []
+        residual_pcd = pcd
+
+        for i in range(self.plane_config['max_planes']):
+            if len(residual_pcd.points) < self.plane_config['min_plane_points']:
+                break
+
+            try:
+                # RANSAC平面分割
+                plane_model, inliers = residual_pcd.segment_plane(
+                    distance_threshold=self.plane_config['distance_threshold'],
+                    ransac_n=self.plane_config['ransac_n'],
+                    num_iterations=self.plane_config['num_iterations']
+                )
+
+                if len(inliers) < self.plane_config['min_plane_points']:
+                    break
+
+                # 提取平面点云
+                plane_pcd = residual_pcd.select_by_index(inliers)
+                planes.append({
+                    'model': plane_model,  # [a, b, c, d] 平面方程 ax+by+cz+d=0
+                    'pcd': plane_pcd,
+                    'inliers_count': len(inliers)
+                })
+
+                # 移除已检测的平面点
+                residual_pcd = residual_pcd.select_by_index(inliers, invert=True)
+
+                self.log_progress(47 + i, f"检测到平面 {i+1}: {len(inliers)} 个点")
+
+            except Exception as e:
+                self.log_progress(47 + i, f"平面检测失败: {e}")
+                break
+
+        self.log_progress(50, f"平面检测完成，共检测到 {len(planes)} 个平面，剩余 {len(residual_pcd.points)} 个点")
+        return planes, residual_pcd
+
+    def extract_plane_quad_corners(self, plane_pcd, plane_model):
+        """提取平面的四个角点"""
+        try:
+            # 获取平面法向量
+            a, b, c, d = plane_model
+            normal = np.array([a, b, c])
+            normal = normal / np.linalg.norm(normal)
+
+            # 获取平面中心点
+            points = np.asarray(plane_pcd.points)
+            center = np.mean(points, axis=0)
+
+            # 构建局部坐标系
+            # 选择一个与法向量不平行的向量
+            if abs(normal[2]) < 0.9:
+                temp = np.array([0, 0, 1])
+            else:
+                temp = np.array([1, 0, 0])
+
+            # 构建正交基
+            u = np.cross(normal, temp)
+            u = u / np.linalg.norm(u)
+            v = np.cross(normal, u)
+
+            # 将3D点投影到2D平面
+            points_2d = []
+            for point in points:
+                relative = point - center
+                x_2d = np.dot(relative, u)
+                y_2d = np.dot(relative, v)
+                points_2d.append([x_2d, y_2d])
+
+            points_2d = np.array(points_2d)
+
+            # 计算2D边界框（简化版最小外接矩形）
+            min_x, max_x = np.min(points_2d[:, 0]), np.max(points_2d[:, 0])
+            min_y, max_y = np.min(points_2d[:, 1]), np.max(points_2d[:, 1])
+
+            # 四个角点（2D）
+            corners_2d = np.array([
+                [min_x, min_y],
+                [max_x, min_y],
+                [max_x, max_y],
+                [min_x, max_y]
+            ])
+
+            # 投影回3D
+            corners_3d = []
+            for corner_2d in corners_2d:
+                corner_3d = center + corner_2d[0] * u + corner_2d[1] * v
+                corners_3d.append(corner_3d)
+
+            return np.array(corners_3d)
+
+        except Exception as e:
+            self.log_progress(48, f"四角点提取失败: {e}")
+            # 退化方案：使用包围盒
+            bbox = plane_pcd.get_axis_aligned_bounding_box()
+            return np.asarray(bbox.get_box_points())[:4]  # 取前4个点
+
+    def create_quad_mesh(self, corners):
+        """从四个角点创建两个三角形"""
+        try:
+            # 创建网格
+            mesh = o3d.geometry.TriangleMesh()
+            mesh.vertices = o3d.utility.Vector3dVector(corners)
+
+            # 创建两个三角形（沿短对角线分割）
+            # 计算对角线长度
+            diag1_len = np.linalg.norm(corners[2] - corners[0])
+            diag2_len = np.linalg.norm(corners[3] - corners[1])
+
+            if diag1_len < diag2_len:
+                # 沿对角线 0-2 分割
+                triangles = [[0, 1, 2], [0, 2, 3]]
+            else:
+                # 沿对角线 1-3 分割
+                triangles = [[0, 1, 3], [1, 2, 3]]
+
+            mesh.triangles = o3d.utility.Vector3iVector(triangles)
+            mesh.compute_vertex_normals()
+
+            return mesh
+
+        except Exception as e:
+            self.log_progress(48, f"四角网格创建失败: {e}")
+            return None
+
     def create_mesh(self, pcd):
-        """创建三角网格（自适应参数）"""
-        self.log_progress(50, "开始三角剖分...")
+        """创建三角网格（混合方法：平面四角化 + 残余重建）"""
+        self.log_progress(46, "开始混合网格重建...")
+
+        # 1. 平面检测
+        planes, residual_pcd = self.detect_planes(pcd)
+
+        all_meshes = []
+
+        # 2. 为每个平面创建四角网格
+        for i, plane in enumerate(planes):
+            self.log_progress(50 + i, f"处理平面 {i+1}/{len(planes)}")
+            try:
+                corners = self.extract_plane_quad_corners(plane['pcd'], plane['model'])
+                quad_mesh = self.create_quad_mesh(corners)
+                if quad_mesh is not None:
+                    all_meshes.append(quad_mesh)
+                    self.log_progress(50 + i, f"平面 {i+1} 四角化完成: 2个三角形")
+            except Exception as e:
+                self.log_progress(50 + i, f"平面 {i+1} 四角化失败: {e}")
+
+        # 3. 对残余点进行传统重建
+        residual_mesh = None
+        if len(residual_pcd.points) > 100:  # 只有足够的点才进行重建
+            self.log_progress(60, f"重建残余点云: {len(residual_pcd.points)} 个点")
+            residual_mesh = self._reconstruct_residual_points(residual_pcd)
+            if residual_mesh is not None:
+                all_meshes.append(residual_mesh)
+
+        # 4. 合并所有网格
+        if not all_meshes:
+            raise ValueError("无法生成任何有效网格")
+
+        self.log_progress(70, f"合并 {len(all_meshes)} 个网格...")
+        final_mesh = self._merge_meshes(all_meshes)
+
+        self.log_progress(72, f"混合重建完成: {len(final_mesh.triangles)} 个三角形")
+        return final_mesh
+
+    def _reconstruct_residual_points(self, pcd):
+        """重建残余点云（非平面部分）"""
+        if len(pcd.points) < 50:
+            return None
 
         pts = np.asarray(pcd.points)
         spacing = self._estimate_spacing(pts)
 
-        # 优先尝试 Poisson（适合光滑连续表面）
+        # 优先尝试 Alpha-Shape（对残余点更适合）
         try:
-            depth = 9 if len(pts) < 200_000 else 10
-            scale = 1.1
-            mesh, _ = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
-                pcd, depth=depth, width=0, scale=scale, linear_fit=False
-            )
-            # 可选裁剪：以点云包围盒为界限，适度扩展避免过厚外壳
-            try:
-                aabb = pcd.get_axis_aligned_bounding_box()
-                mesh = mesh.crop(aabb.scale(1.2, aabb.get_center()))
-            except Exception:
-                pass
-            self.log_progress(65, f"Poisson重建完成 (depth={depth})，生成 {len(mesh.triangles)} 个三角形")
+            alpha = max(spacing * 2.0, 5e-4)
+            mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_alpha_shape(pcd, alpha=alpha)
+            if len(mesh.triangles) > 0:
+                self.log_progress(65, f"残余点Alpha-Shape成功: {len(mesh.triangles)} 个三角形")
+                return mesh
         except Exception as e:
-            mesh = None
-            self.log_progress(55, f"Poisson失败: {e}")
+            self.log_progress(62, f"Alpha-Shape失败: {e}")
 
-        # 如果 Poisson 网格过大或明显失真，尝试 Alpha-Shape
-        if mesh is None or len(mesh.triangles) == 0:
-            alpha = max(spacing * 2.5, 5e-4)
-            try:
-                mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_alpha_shape(pcd, alpha=alpha)
-                self.log_progress(65, f"Alpha-Shape成功 (alpha={alpha:.5f})，三角形 {len(mesh.triangles)}")
-            except Exception as e2:
-                mesh = None
-                self.log_progress(60, f"Alpha-Shape失败: {e2}")
-
-        # 如果 Alpha 也不合适，尝试 Ball Pivoting
-        if mesh is None or len(mesh.triangles) == 0:
+        # 备用：Ball Pivoting
+        try:
             base = max(spacing, 1e-3)
-            radii = [base * r for r in (0.7, 1.0, 1.5, 2.5)]
-            try:
-                mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(
-                    pcd, o3d.utility.DoubleVector(radii)
-                )
-                self.log_progress(65, f"Ball Pivoting成功 (r~{base:.5f})，三角形 {len(mesh.triangles)}")
-            except Exception as e3:
-                self.log_progress(60, f"Ball Pivoting失败: {e3}")
-                raise
+            radii = [base * r for r in (0.8, 1.2, 2.0)]
+            mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(
+                pcd, o3d.utility.DoubleVector(radii)
+            )
+            if len(mesh.triangles) > 0:
+                self.log_progress(65, f"残余点Ball Pivoting成功: {len(mesh.triangles)} 个三角形")
+                return mesh
+        except Exception as e:
+            self.log_progress(63, f"Ball Pivoting失败: {e}")
 
-        if len(mesh.triangles) == 0:
-            raise ValueError("无法生成有效的三角网格")
+        # 最后尝试 Poisson（可能过度平滑）
+        try:
+            depth = 8  # 较小的深度避免过度平滑
+            mesh, _ = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+                pcd, depth=depth, width=0, scale=1.1, linear_fit=False
+            )
+            if len(mesh.triangles) > 0:
+                # 裁剪到点云范围
+                aabb = pcd.get_axis_aligned_bounding_box()
+                mesh = mesh.crop(aabb.scale(1.1, aabb.get_center()))
+                self.log_progress(65, f"残余点Poisson成功: {len(mesh.triangles)} 个三角形")
+                return mesh
+        except Exception as e:
+            self.log_progress(64, f"Poisson失败: {e}")
 
-        return mesh
+        return None
+
+    def _merge_meshes(self, meshes):
+        """合并多个网格"""
+        if len(meshes) == 1:
+            return meshes[0]
+
+        # 合并顶点和三角形
+        all_vertices = []
+        all_triangles = []
+        vertex_offset = 0
+
+        for mesh in meshes:
+            vertices = np.asarray(mesh.vertices)
+            triangles = np.asarray(mesh.triangles)
+
+            all_vertices.append(vertices)
+            # 调整三角形索引
+            adjusted_triangles = triangles + vertex_offset
+            all_triangles.append(adjusted_triangles)
+            vertex_offset += len(vertices)
+
+        # 创建合并后的网格
+        merged_mesh = o3d.geometry.TriangleMesh()
+        merged_mesh.vertices = o3d.utility.Vector3dVector(np.vstack(all_vertices))
+        merged_mesh.triangles = o3d.utility.Vector3iVector(np.vstack(all_triangles))
+
+        # 合并重复顶点
+        merged_mesh.merge_close_vertices(self.recon_config['merge_epsilon'])
+
+        return merged_mesh
     
     def postprocess_mesh(self, mesh):
         """后处理网格"""
