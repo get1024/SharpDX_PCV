@@ -242,53 +242,7 @@ namespace SharpDX_PCV
             }
         }
 
-        /// <summary>
-        /// STL导出按钮点击事件 - 优化后的工作流
-        /// </summary>
-        private async void BtnExportSTL_Click(object sender, RoutedEventArgs e)
-        {
-            if (currentSTLMesh == null)
-            {
-                MessageBox.Show("没有可导出的STL模型。请先转换点云为STL。", "导出错误", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
 
-            if (string.IsNullOrWhiteSpace(selectedOutputDir) || !Directory.Exists(selectedOutputDir))
-            {
-                MessageBox.Show("请先选择有效的输出目录。", "输出目录错误", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-
-            try
-            {
-                btnExportSTL.IsEnabled = false;
-                UpdateRightProgress(10, "正在导出STL文件...");
-
-                // 使用时间戳生成文件名
-                var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-                var fileName = $"PointCloud_STL_{timestamp}.stl";
-                var fullPath = Path.Combine(selectedOutputDir, fileName);
-
-                await Task.Run(() =>
-                {
-                    stlConverter.ExportSTL(currentSTLMesh, fullPath);
-                });
-
-                UpdateRightProgress(100, $"STL文件已导出: {fileName}");
-                txtStatus.Text = $"STL文件已成功导出: {fileName}";
-                MessageBox.Show($"STL文件已成功保存到:\n{fullPath}", "导出成功", MessageBoxButton.OK, MessageBoxImage.Information);
-            }
-            catch (Exception ex)
-            {
-                UpdateRightProgress(0, "STL导出失败");
-                txtStatus.Text = "STL导出失败";
-                MessageBox.Show($"导出STL文件时发生错误:\n{ex.Message}", "导出错误", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-            finally
-            {
-                btnExportSTL.IsEnabled = true;
-            }
-        }
         #endregion
 
         #region 事件处理器
@@ -443,7 +397,7 @@ namespace SharpDX_PCV
                 stlViewport.Items.Remove(currentSTLMesh);
                 currentSTLMesh = null;
             }
-            btnExportSTL.IsEnabled = false;
+
 
             // 重置右侧进度显示
             UpdateRightProgress(0, "就绪");
@@ -472,7 +426,7 @@ namespace SharpDX_PCV
                 UpdateRightProgress(80, "正在显示STL模型...");
 
                 DisplaySTLMesh(mesh);
-                btnExportSTL.IsEnabled = true;
+
 
                 // 关键：加载外部STL后，按左侧点云数据决定“点云→STL”按钮状态
                 btnConvertToSTL.IsEnabled = renderPointCloudData.Count > 0;
@@ -1508,9 +1462,12 @@ namespace SharpDX_PCV
                     Dispatcher.Invoke(() =>
                     {
                         DisplaySTLMesh(mesh);
-                        btnExportSTL.IsEnabled = true;
-                        UpdateRightProgress(100, $"STL转换完成 | 输入点数: {result.OriginalPoints:N0} | 三角形数: {result.FinalTriangles:N0}");
-                        txtStatus.Text = $"STL转换完成 | 输入点数: {result.OriginalPoints:N0} | 三角形数: {result.FinalTriangles:N0}";
+
+                        UpdateRightProgress(100, $"STL转换并保存完成 | 输入点数: {result.OriginalPoints:N0} | 三角形数: {result.FinalTriangles:N0}");
+                        txtStatus.Text = $"STL转换并保存完成 | 文件: {Path.GetFileName(result.OutputPath)} | 输入点数: {result.OriginalPoints:N0} | 三角形数: {result.FinalTriangles:N0}";
+
+                        // 显示成功消息
+                        MessageBox.Show($"STL文件已成功转换并保存到:\n{result.OutputPath}", "转换成功", MessageBoxButton.OK, MessageBoxImage.Information);
                     });
 
                     // 清理临时文件
@@ -1532,7 +1489,7 @@ namespace SharpDX_PCV
                 {
                     UpdateRightProgress(0, $"STL转换失败: {ex.Message}");
                     txtStatus.Text = $"STL转换失败: {ex.Message}";
-                    btnExportSTL.IsEnabled = false;
+
                 });
             }
         }

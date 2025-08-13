@@ -63,7 +63,7 @@
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                     <!-- 输出目录选择 -->
                     <TextBlock Text="输出目录:" VerticalAlignment="Center" Margin="5,0,5,0"/>
-                    <TextBox x:Name="txtOutputDir" Width="200" VerticalAlignment="Center" IsReadOnly="True"/>
+                    <TextBox x:Name="txtOutputDir" Text="D:\SysData\Desktop" Width="200" VerticalAlignment="Center" IsReadOnly="True"/>
                     <Button x:Name="btnBrowseOutputDir" Content="浏览..." Margin="5,0,0,0" Padding="10,5" Click="BtnBrowseOutputDir_Click"/>
 
                     <!-- 点云转STL按钮 -->
@@ -74,13 +74,7 @@
                             IsEnabled="False"
                             Background="#2196F3" Foreground="Black"/>
 
-                    <!-- STL导出按钮 -->
-                    <Button x:Name="btnExportSTL"
-                            Content="导出STL文件"
-                            Padding="10,5" Margin="10,0,0,0"
-                            Click="BtnExportSTL_Click"
-                            IsEnabled="False"
-                            Background="#4CAF50" Foreground="Black"/>
+
                 </StackPanel>
             </Grid>
         </Border>
