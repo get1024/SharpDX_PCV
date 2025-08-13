@@ -20,54 +20,69 @@
 
         <!-- Top Control Panel -->
         <Border Grid.Row="0" Grid.ColumnSpan="3" Background="#F0F0F0" Padding="10" BorderBrush="#CCCCCC" BorderThickness="0,0,0,1">
-            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                <Button x:Name="btnOpenFile"
-                        Content="选择文件"
-                        Padding="10,5" Margin="0,0,10,0" Click="BtnOpenFile_Click"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="5"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
 
-                <!-- 降采样控制 -->
-                <TextBlock Text="降采样级别:" VerticalAlignment="Center" Margin="20,0,5,0"/>
-                <Slider x:Name="DownsampleSlider"
-                        Minimum="1" Maximum="10" Value="1"
-                        Width="100" VerticalAlignment="Center"
-                        TickFrequency="1" TickPlacement="BottomRight"
-                        IsSnapToTickEnabled="True"
-                        ValueChanged="DownsampleSlider_ValueChanged"/>
-                <TextBlock x:Name="DownsampleValueText" Text="1"
-                           VerticalAlignment="Center" Margin="5,0,0,0" MinWidth="15"/>
+                <!-- 左侧面板控件 -->
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button x:Name="btnOpenFile"
+                            Content="选择文件"
+                            Padding="10,5" Margin="0,0,10,0" Click="BtnOpenFile_Click"/>
 
-                <!-- 颜色模式选择 -->
-                <TextBlock Text="颜色模式:" VerticalAlignment="Center" Margin="20,0,5,0"/>
-                <ComboBox x:Name="ColorModeComboBox"
-                          Width="120" VerticalAlignment="Center"
-                          SelectionChanged="ColorModeComboBox_SelectionChanged">
-                    <ComboBoxItem Content="按文件区分" Tag="ByFile" IsSelected="True"/>
-                    <ComboBoxItem Content="高度映射" Tag="HeightBased"/>
-                    <ComboBoxItem Content="统一颜色" Tag="Uniform"/>
-                    <ComboBoxItem Content="灰度渐变" Tag="Grayscale"/>
-                </ComboBox>
+                    <!-- 降采样控制 -->
+                    <TextBlock Text="降采样级别:" VerticalAlignment="Center" Margin="20,0,5,0"/>
+                    <Slider x:Name="DownsampleSlider"
+                            Minimum="1" Maximum="10" Value="1"
+                            Width="100" VerticalAlignment="Center"
+                            TickFrequency="1" TickPlacement="BottomRight"
+                            IsSnapToTickEnabled="True"
+                            ValueChanged="DownsampleSlider_ValueChanged"/>
+                    <TextBlock x:Name="DownsampleValueText" Text="1"
+                               VerticalAlignment="Center" Margin="5,0,0,0" MinWidth="15"/>
 
-                <!-- 输出目录选择 -->
-                <TextBlock Text="输出目录:" VerticalAlignment="Center" Margin="20,0,5,0"/>
-                <TextBox x:Name="txtOutputDir" Width="260" VerticalAlignment="Center" IsReadOnly="True"/>
-                <Button x:Name="btnBrowseOutputDir" Content="浏览..." Margin="5,0,0,0" Padding="10,5" Click="BtnBrowseOutputDir_Click"/>
+                    <!-- 颜色模式选择 -->
+                    <TextBlock Text="颜色模式:" VerticalAlignment="Center" Margin="20,0,5,0"/>
+                    <ComboBox x:Name="ColorModeComboBox"
+                              Width="120" VerticalAlignment="Center"
+                              SelectionChanged="ColorModeComboBox_SelectionChanged">
+                        <ComboBoxItem Content="按文件区分" Tag="ByFile" IsSelected="True"/>
+                        <ComboBoxItem Content="高度映射" Tag="HeightBased"/>
+                        <ComboBoxItem Content="统一颜色" Tag="Uniform"/>
+                        <ComboBoxItem Content="灰度渐变" Tag="Grayscale"/>
+                    </ComboBox>
+                </StackPanel>
 
-                <!-- 点云转STL按钮 -->
-                <Button x:Name="btnConvertToSTL"
-                        Content="点云→STL"
-                        Padding="10,5" Margin="20,0,0,0"
-                        Click="BtnConvertToSTL_Click"
-                        IsEnabled="False"
-                        Background="#2196F3" Foreground="Black"/>
+                <!-- 分隔线 -->
+                <Rectangle Grid.Column="1" Width="1" Fill="#CCCCCC" VerticalAlignment="Stretch" Margin="2,5"/>
 
-                <!-- STL导出按钮 -->
-                <Button x:Name="btnExportSTL"
-                        Content="导出STL文件"
-                        Padding="10,5" Margin="10,0,0,0"
-                        Click="BtnExportSTL_Click"
-                        IsEnabled="False"
-                        Background="#4CAF50" Foreground="Black"/>
-            </StackPanel>
+                <!-- 右侧面板控件 -->
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <!-- 输出目录选择 -->
+                    <TextBlock Text="输出目录:" VerticalAlignment="Center" Margin="5,0,5,0"/>
+                    <TextBox x:Name="txtOutputDir" Width="200" VerticalAlignment="Center" IsReadOnly="True"/>
+                    <Button x:Name="btnBrowseOutputDir" Content="浏览..." Margin="5,0,0,0" Padding="10,5" Click="BtnBrowseOutputDir_Click"/>
+
+                    <!-- 点云转STL按钮 -->
+                    <Button x:Name="btnConvertToSTL"
+                            Content="点云→STL"
+                            Padding="10,5" Margin="20,0,0,0"
+                            Click="BtnConvertToSTL_Click"
+                            IsEnabled="False"
+                            Background="#2196F3" Foreground="Black"/>
+
+                    <!-- STL导出按钮 -->
+                    <Button x:Name="btnExportSTL"
+                            Content="导出STL文件"
+                            Padding="10,5" Margin="10,0,0,0"
+                            Click="BtnExportSTL_Click"
+                            IsEnabled="False"
+                            Background="#4CAF50" Foreground="Black"/>
+                </StackPanel>
+            </Grid>
         </Border>
 
         <!-- 左侧点云显示区域 -->
@@ -196,14 +211,46 @@
             </hx:Viewport3DX>
 
             <!-- 右侧进度显示 -->
-            <Border Grid.Row="2" Background="#F8F8F8" Padding="10" BorderBrush="#DDDDDD" BorderThickness="0,1,0,0">
-                <StackPanel>
-                    <TextBlock Text="STL转换进度" FontWeight="Bold" FontSize="12" Margin="0,0,0,5"/>
-                    <ProgressBar x:Name="rightProgressBar" Height="20" Margin="0,0,0,5"
-                                 Minimum="0" Maximum="100" Value="0"/>
-                    <TextBlock x:Name="rightProgressText" Text="就绪" FontSize="11"
-                               Foreground="DarkGreen" TextWrapping="Wrap"/>
-                </StackPanel>
+            <Border Grid.Row="2" Background="#F8F8F8" BorderBrush="#DDDDDD" BorderThickness="0,1,0,0">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel  Grid.Column="0">
+                        <TextBlock Text="STL转换进度" FontWeight="Bold" FontSize="12" VerticalAlignment="Center" Margin="10,10,0,5"/>
+                        <TextBlock x:Name="rightProgressText" Text="就绪" FontSize="11"
+Foreground="DarkGreen" TextWrapping="Wrap" VerticalAlignment="Center" Margin="10,0,0,10"/>
+                    </StackPanel>
+
+                    <!-- 圆形进度指示器 -->
+                    <Grid Grid.Column="2" Width="40" Height="40" VerticalAlignment="Center" Margin="0,0,10,0">
+                        <!-- 背景圆环 -->
+                        <Ellipse Stroke="#E0E0E0" StrokeThickness="3" Fill="Transparent" Opacity="0.7"/>
+                        <!-- 进度圆环 -->
+                        <Ellipse x:Name="rightProgressRing"
+                                 Stroke="#4CAF50"
+                                 StrokeThickness="3"
+                                 Fill="Transparent"
+                                 StrokeDashArray="0,100"
+                                 RenderTransformOrigin="0.5,0.5">
+                            <Ellipse.RenderTransform>
+                                <RotateTransform Angle="-90"/>
+                            </Ellipse.RenderTransform>
+                        </Ellipse>
+                        <!-- 进度百分比文本 -->
+                        <TextBlock x:Name="rightProgressPercent"
+                                   Text="0%"
+                                   FontSize="10"
+                                   FontWeight="Bold"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   Foreground="#4CAF50"/>
+                    </Grid>
+
+                    
+                </Grid>
             </Border>
         </Grid>
 

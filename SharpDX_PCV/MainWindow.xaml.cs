@@ -243,48 +243,50 @@ namespace SharpDX_PCV
         }
 
         /// <summary>
-        /// STL导出按钮点击事件
+        /// STL导出按钮点击事件 - 优化后的工作流
         /// </summary>
         private async void BtnExportSTL_Click(object sender, RoutedEventArgs e)
         {
             if (currentSTLMesh == null)
             {
-                MessageBox.Show("没有可导出的STL模型。请先加载点云文件。", "导出错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show("没有可导出的STL模型。请先转换点云为STL。", "导出错误", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
-            var saveFileDialog = new SaveFileDialog
+            if (string.IsNullOrWhiteSpace(selectedOutputDir) || !Directory.Exists(selectedOutputDir))
             {
-                Title = "保存STL文件",
-                Filter = "STL文件 (*.stl)|*.stl|所有文件 (*.*)|*.*",
-                DefaultExt = "stl",
-                InitialDirectory = Environment.CurrentDirectory
-            };
+                MessageBox.Show("请先选择有效的输出目录。", "输出目录错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
 
-            if (saveFileDialog.ShowDialog() == true)
+            try
             {
-                try
-                {
-                    btnExportSTL.IsEnabled = false;
-                    txtStatus.Text = "正在导出STL文件...";
+                btnExportSTL.IsEnabled = false;
+                UpdateRightProgress(10, "正在导出STL文件...");
 
-                    await Task.Run(() =>
-                    {
-                        stlConverter.ExportSTL(currentSTLMesh, saveFileDialog.FileName);
-                    });
+                // 使用时间戳生成文件名
+                var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                var fileName = $"PointCloud_STL_{timestamp}.stl";
+                var fullPath = Path.Combine(selectedOutputDir, fileName);
 
-                    txtStatus.Text = $"STL文件已成功导出: {Path.GetFileName(saveFileDialog.FileName)}";
-                    MessageBox.Show($"STL文件已成功保存到:\n{saveFileDialog.FileName}", "导出成功", MessageBoxButton.OK, MessageBoxImage.Information);
-                }
-                catch (Exception ex)
+                await Task.Run(() =>
                 {
-                    txtStatus.Text = "STL导出失败";
-                    MessageBox.Show($"导出STL文件时发生错误:\n{ex.Message}", "导出错误", MessageBoxButton.OK, MessageBoxImage.Error);
-                }
-                finally
-                {
-                    btnExportSTL.IsEnabled = true;
-                }
+                    stlConverter.ExportSTL(currentSTLMesh, fullPath);
+                });
+
+                UpdateRightProgress(100, $"STL文件已导出: {fileName}");
+                txtStatus.Text = $"STL文件已成功导出: {fileName}";
+                MessageBox.Show($"STL文件已成功保存到:\n{fullPath}", "导出成功", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                UpdateRightProgress(0, "STL导出失败");
+                txtStatus.Text = "STL导出失败";
+                MessageBox.Show($"导出STL文件时发生错误:\n{ex.Message}", "导出错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                btnExportSTL.IsEnabled = true;
             }
         }
         #endregion
@@ -387,8 +389,8 @@ namespace SharpDX_PCV
                 return;
             }
 
-            // 清空左侧点云显示
-            ClearPointCloudDisplay();
+            // 清空右侧STL显示（不要清理左侧点云，以免禁用“点云→STL”按钮）
+            ClearSTLDisplay();
 
             // 加载STL文件
             await LoadStlFileAsync(stlFiles[0]);
@@ -452,8 +454,7 @@ namespace SharpDX_PCV
         /// </summary>
         private void ResetProgressDisplays()
         {
-            rightProgressBar.Value = 0;
-            rightProgressText.Text = "就绪";
+            UpdateRightProgress(0, "就绪");
         }
 
         /// <summary>
@@ -473,6 +474,9 @@ namespace SharpDX_PCV
                 DisplaySTLMesh(mesh);
                 btnExportSTL.IsEnabled = true;
 
+                // 关键：加载外部STL后，按左侧点云数据决定“点云→STL”按钮状态
+                btnConvertToSTL.IsEnabled = renderPointCloudData.Count > 0;
+
                 UpdateRightProgress(100, $"STL文件加载完成: {Path.GetFileName(filePath)}");
                 txtStatus.Text = $"STL文件已加载: {Path.GetFileName(filePath)}";
             }
@@ -486,14 +490,31 @@ namespace SharpDX_PCV
 
 
         /// <summary>
-        /// 更新右侧进度显示
+        /// 更新右侧进度显示 - 使用圆形进度指示器
         /// </summary>
         private void UpdateRightProgress(double value, string text)
         {
             Dispatcher.Invoke(() =>
             {
-                rightProgressBar.Value = value;
+                // 更新圆形进度指示器
+                var circumference = Math.PI * 2 * 10.5; // 半径约为10.5
+                var dashLength = (value / 100.0) * circumference;
+                var gapLength = circumference - dashLength;
+
+                rightProgressRing.StrokeDashArray = new System.Windows.Media.DoubleCollection { dashLength, gapLength };
+
+                // 更新百分比文本
+                rightProgressPercent.Text = $"{value:F0}%";
+
+                // 更新状态文本
                 rightProgressText.Text = text;
+
+                // 根据进度值改变颜色
+                var progressColor = value >= 100 ? "#4CAF50" : value >= 50 ? "#FF9800" : "#2196F3";
+                rightProgressRing.Stroke = new System.Windows.Media.SolidColorBrush(
+                    (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(progressColor));
+                rightProgressPercent.Foreground = new System.Windows.Media.SolidColorBrush(
+                    (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(progressColor));
             });
         }
 
@@ -1399,6 +1420,49 @@ namespace SharpDX_PCV
         #region === STL转换功能 ===
 
         /// <summary>
+        /// 查找项目根目录
+        /// </summary>
+        private string? FindProjectRoot()
+        {
+            try
+            {
+                // 从当前执行目录开始向上查找
+                var currentDir = new DirectoryInfo(AppDomain.CurrentDomain.BaseDirectory);
+
+                while (currentDir != null)
+                {
+                    // 查找包含pyFunc目录的位置
+                    var pyFuncPath = Path.Combine(currentDir.FullName, "pyFunc");
+                    var sharpDxPyFuncPath = Path.Combine(currentDir.FullName, "SharpDX_PCV", "pyFunc");
+
+                    if (Directory.Exists(pyFuncPath) && File.Exists(Path.Combine(pyFuncPath, "pointcloud_to_stl.py")))
+                    {
+                        return currentDir.FullName;
+                    }
+
+                    if (Directory.Exists(sharpDxPyFuncPath) && File.Exists(Path.Combine(sharpDxPyFuncPath, "pointcloud_to_stl.py")))
+                    {
+                        return currentDir.FullName;
+                    }
+
+                    // 也可以通过解决方案文件来识别
+                    if (File.Exists(Path.Combine(currentDir.FullName, "SharpDX_PCV.sln")))
+                    {
+                        return currentDir.FullName;
+                    }
+
+                    currentDir = currentDir.Parent;
+                }
+
+                return null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
         /// 异步将渲染数据转换为STL模型（使用Python）
         /// </summary>
         private async Task ConvertRenderDataToSTLAsync()
@@ -1493,17 +1557,26 @@ namespace SharpDX_PCV
         {
             try
             {
-                // 获取Python脚本路径（支持开发环境与发布环境）
+                // 获取项目根目录（更可靠的路径解析）
                 string baseDir = AppDomain.CurrentDomain.BaseDirectory;
                 string exeDir = AppContext.BaseDirectory;
+                string currentDir = Environment.CurrentDirectory;
+
+                // 尝试找到项目根目录（包含SharpDX_PCV.sln或pyFunc目录的位置）
+                string? projectRoot = FindProjectRoot();
 
                 string[] candidateScriptPaths = new[]
                 {
+                    // 优先使用项目根目录
+                    projectRoot != null ? Path.Combine(projectRoot, "SharpDX_PCV", "pyFunc", "pointcloud_to_stl.py") : null,
+                    projectRoot != null ? Path.Combine(projectRoot, "pyFunc", "pointcloud_to_stl.py") : null,
+                    // 备用路径
                     Path.Combine(baseDir, "pyFunc", "pointcloud_to_stl.py"),
                     Path.Combine(exeDir, "pyFunc", "pointcloud_to_stl.py"),
-                    Path.Combine(Environment.CurrentDirectory, "pyFunc", "pointcloud_to_stl.py"),
-                    Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "pyFunc", "pointcloud_to_stl.py")
-                };
+                    Path.Combine(currentDir, "pyFunc", "pointcloud_to_stl.py"),
+                    Path.Combine(baseDir, "..", "..", "pyFunc", "pointcloud_to_stl.py"),
+                    Path.Combine(baseDir, "..", "..", "SharpDX_PCV", "pyFunc", "pointcloud_to_stl.py")
+                }.Where(p => p != null).Cast<string>().ToArray();
 
                 string? scriptPath = candidateScriptPaths.FirstOrDefault(File.Exists);
                 if (scriptPath == null)
@@ -1511,18 +1584,30 @@ namespace SharpDX_PCV
                     throw new FileNotFoundException("Python脚本不存在: " + string.Join(" | ", candidateScriptPaths));
                 }
 
+                // 获取脚本所在的pyFunc目录
+                string pyFuncDir = Path.GetDirectoryName(scriptPath)!;
+
                 string[] candidatePythonExePaths = new[]
                 {
+                    // 优先使用脚本同目录下的虚拟环境
+                    Path.Combine(pyFuncDir, ".venv", "Scripts", "python.exe"),
+                    // 备用路径
+                    projectRoot != null ? Path.Combine(projectRoot, "SharpDX_PCV", "pyFunc", ".venv", "Scripts", "python.exe") : null,
+                    projectRoot != null ? Path.Combine(projectRoot, "pyFunc", ".venv", "Scripts", "python.exe") : null,
                     Path.Combine(baseDir, "pyFunc", ".venv", "Scripts", "python.exe"),
                     Path.Combine(exeDir, "pyFunc", ".venv", "Scripts", "python.exe"),
-                    Path.Combine(Environment.CurrentDirectory, "pyFunc", ".venv", "Scripts", "python.exe")
-                };
+                    Path.Combine(currentDir, "pyFunc", ".venv", "Scripts", "python.exe")
+                }.Where(p => p != null).Cast<string>().ToArray();
 
                 string? pythonExePath = candidatePythonExePaths.FirstOrDefault(File.Exists);
                 if (pythonExePath == null)
                 {
                     throw new FileNotFoundException("Python解释器不存在: " + string.Join(" | ", candidatePythonExePaths));
                 }
+
+                // 调试信息
+                UpdateRightProgress(8, $"找到Python: {Path.GetFileName(pythonExePath)}");
+                UpdateRightProgress(9, $"脚本路径: {Path.GetFileName(scriptPath)}");
 
                 // 构建命令行参数
                 var args = new List<string>
@@ -1548,7 +1633,7 @@ namespace SharpDX_PCV
 
                 UpdateRightProgress(10, "启动Python转换进程...");
 
-                // 创建进程
+                // 创建进程（使用正确的工作目录和环境变量）
                 var processInfo = new ProcessStartInfo
                 {
                     FileName = pythonExePath,
@@ -1557,8 +1642,27 @@ namespace SharpDX_PCV
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     CreateNoWindow = true,
-                    WorkingDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "pyFunc")
+                    WorkingDirectory = pyFuncDir  // 使用脚本所在的pyFunc目录
                 };
+
+                // 设置环境变量以确保Python能找到虚拟环境
+                var venvPath = Path.GetDirectoryName(pythonExePath);
+                if (venvPath != null)
+                {
+                    var venvRoot = Path.GetDirectoryName(venvPath); // .venv目录
+                    var scriptsPath = Path.Combine(venvRoot!, "Scripts");
+                    var libPath = Path.Combine(venvRoot!, "Lib", "site-packages");
+
+                    // 设置VIRTUAL_ENV环境变量
+                    processInfo.EnvironmentVariables["VIRTUAL_ENV"] = venvRoot;
+
+                    // 更新PATH环境变量，确保虚拟环境的Scripts目录在最前面
+                    var currentPath = Environment.GetEnvironmentVariable("PATH") ?? "";
+                    processInfo.EnvironmentVariables["PATH"] = $"{scriptsPath};{currentPath}";
+
+                    // 设置PYTHONPATH
+                    processInfo.EnvironmentVariables["PYTHONPATH"] = libPath;
+                }
 
                 using (var process = new Process { StartInfo = processInfo })
                 {
